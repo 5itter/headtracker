@@ -128,12 +128,12 @@ class _TrackerScreenState extends State<TrackerScreen> {
   ) {
     // OpenTrack UDP format: 6 x float64 little-endian = 48 bytes
     final buf = ByteData(48);
-    buf.setFloat64(0, x, Endian.little);
-    buf.setFloat64(8, y, Endian.little);
-    buf.setFloat64(16, z, Endian.little);
-    buf.setFloat64(24, yaw, Endian.little);
-    buf.setFloat64(32, pitch, Endian.little);
-    buf.setFloat64(40, roll, Endian.little);
+    buf.setFloat64(0, yaw, Endian.little);
+    buf.setFloat64(8, pitch, Endian.little);
+    buf.setFloat64(16, roll, Endian.little);
+    buf.setFloat64(24, x, Endian.little);
+    buf.setFloat64(32, y, Endian.little);
+    buf.setFloat64(40, z, Endian.little);
     _socket!.send(buf.buffer.asUint8List(), _targetAddress!, _targetPort);
   }
 
