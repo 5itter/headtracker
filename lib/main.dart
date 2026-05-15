@@ -85,8 +85,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
     final r22 = t.entry(2, 2);
 
     final pitch = asin(-r21.clamp(-1.0, 1.0)) * (180.0 / pi);
-    final yaw   = atan2(r20, r22) * (180.0 / pi);
-    final roll  = atan2(r01, r11) * (180.0 / pi);
+    final yaw = atan2(r20, r22) * (180.0 / pi);
+    final roll = atan2(r01, r11) * (180.0 / pi);
 
     // Position in cm (ARKit uses meters)
     final x = t.entry(0, 3) * 100.0;
@@ -119,17 +119,21 @@ class _TrackerScreenState extends State<TrackerScreen> {
   }
 
   void _sendPose(
-    double yaw, double pitch, double roll,
-    double x, double y, double z,
+    double yaw,
+    double pitch,
+    double roll,
+    double x,
+    double y,
+    double z,
   ) {
     // OpenTrack UDP format: 6 x float64 little-endian = 48 bytes
     final buf = ByteData(48);
-    buf.setFloat64(0,  yaw,   Endian.little);
-    buf.setFloat64(8,  pitch, Endian.little);
-    buf.setFloat64(16, roll,  Endian.little);
-    buf.setFloat64(24, x,     Endian.little);
-    buf.setFloat64(32, y,     Endian.little);
-    buf.setFloat64(40, z,     Endian.little);
+    buf.setFloat64(0, x, Endian.little);
+    buf.setFloat64(8, y, Endian.little);
+    buf.setFloat64(16, z, Endian.little);
+    buf.setFloat64(24, yaw, Endian.little);
+    buf.setFloat64(32, pitch, Endian.little);
+    buf.setFloat64(40, roll, Endian.little);
     _socket!.send(buf.buffer.asUint8List(), _targetAddress!, _targetPort);
   }
 
@@ -162,9 +166,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
   }
 
   void _showError(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: Colors.red),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
   }
 
   @override
@@ -200,16 +204,19 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         ),
                       ),
                       const Spacer(),
-                      _StatusDot(streaming: _streaming, faceDetected: _faceDetected),
+                      _StatusDot(
+                        streaming: _streaming,
+                        faceDetected: _faceDetected,
+                      ),
                       const SizedBox(width: 8),
                       Text(
                         _streaming
-                          ? (_faceDetected ? '$_fps fps' : 'No face')
-                          : 'Stopped',
+                            ? (_faceDetected ? '$_fps fps' : 'No face')
+                            : 'Stopped',
                         style: TextStyle(
                           color: _streaming && _faceDetected
-                            ? const Color(0xFF00D4FF)
-                            : Colors.grey,
+                              ? const Color(0xFF00D4FF)
+                              : Colors.grey,
                         ),
                       ),
                     ],
@@ -243,17 +250,17 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       onPressed: _toggleStreaming,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _streaming
-                          ? const Color(0xFF3A0000)
-                          : const Color(0xFF003A4A),
+                            ? const Color(0xFF3A0000)
+                            : const Color(0xFF003A4A),
                         foregroundColor: _streaming
-                          ? Colors.redAccent
-                          : const Color(0xFF00D4FF),
+                            ? Colors.redAccent
+                            : const Color(0xFF00D4FF),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10),
                           side: BorderSide(
                             color: _streaming
-                              ? Colors.redAccent
-                              : const Color(0xFF00D4FF),
+                                ? Colors.redAccent
+                                : const Color(0xFF00D4FF),
                           ),
                         ),
                         elevation: 0,
@@ -327,9 +334,12 @@ class _StatusDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Color color;
-    if (!streaming) color = Colors.grey;
-    else if (faceDetected) color = const Color(0xFF00D4FF);
-    else color = Colors.orange;
+    if (!streaming)
+      color = Colors.grey;
+    else if (faceDetected)
+      color = const Color(0xFF00D4FF);
+    else
+      color = Colors.orange;
 
     return Container(
       width: 10,
@@ -338,8 +348,8 @@ class _StatusDot extends StatelessWidget {
         color: color,
         shape: BoxShape.circle,
         boxShadow: streaming && faceDetected
-          ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6)]
-          : null,
+            ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6)]
+            : null,
       ),
     );
   }
