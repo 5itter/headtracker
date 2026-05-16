@@ -47,6 +47,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   int _fps = 0;
   int _frameCount = 0;
+  int _packetsSent = 0;
   DateTime _lastFpsCheck = DateTime.now();
 
   final _ipController = TextEditingController(text: '192.168.1.100');
@@ -71,18 +72,14 @@ class _TrackerScreenState extends State<TrackerScreen> {
   void _handleAnchor(ARKitAnchor anchor) {
     if (anchor is! ARKitFaceAnchor) return;
 
-    // Always use the very latest frame — no buffering
     final t = anchor.transform;
 
     // Extract euler angles from 4x4 rotation matrix (column-major)
-    // Using YXZ convention: yaw (Y), pitch (X), roll (Z)
-    final r00 = t.entry(0, 0);
-    final r01 = t.entry(0, 1);
-    final r10 = t.entry(1, 0);
-    final r11 = t.entry(1, 1);
     final r20 = t.entry(2, 0);
     final r21 = t.entry(2, 1);
     final r22 = t.entry(2, 2);
+    final r01 = t.entry(0, 1);
+    final r11 = t.entry(1, 1);
 
     final pitch = asin(-r21.clamp(-1.0, 1.0)) * (180.0 / pi);
     final yaw = atan2(r20, r22) * (180.0 / pi);
@@ -102,6 +99,11 @@ class _TrackerScreenState extends State<TrackerScreen> {
       _lastFpsCheck = now;
     }
 
+    // Send UDP immediately — no queue, no wait
+    if (_streaming && _socket != null && _targetAddress != null) {
+      _sendPose(yaw, pitch, roll, x, y, z);
+    }
+
     setState(() {
       _yaw = yaw;
       _pitch = pitch;
@@ -111,11 +113,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
       _z = z;
       _faceDetected = true;
     });
-
-    // Send UDP immediately — no queue, no wait
-    if (_streaming && _socket != null && _targetAddress != null) {
-      _sendPose(yaw, pitch, roll, x, y, z);
-    }
   }
 
   void _sendPose(
@@ -126,15 +123,16 @@ class _TrackerScreenState extends State<TrackerScreen> {
     double y,
     double z,
   ) {
-    // OpenTrack UDP format: 6 x float64 little-endian = 48 bytes
+    // OpenTrack UDP format: x, y, z, yaw, pitch, roll — 6 x float64 little-endian
     final buf = ByteData(48);
-    buf.setFloat64(0, yaw, Endian.little);
-    buf.setFloat64(8, pitch, Endian.little);
-    buf.setFloat64(16, roll, Endian.little);
-    buf.setFloat64(24, x, Endian.little);
-    buf.setFloat64(32, y, Endian.little);
-    buf.setFloat64(40, z, Endian.little);
+    buf.setFloat64(0, x, Endian.little);
+    buf.setFloat64(8, y, Endian.little);
+    buf.setFloat64(16, z, Endian.little);
+    buf.setFloat64(24, yaw, Endian.little);
+    buf.setFloat64(32, pitch, Endian.little);
+    buf.setFloat64(40, roll, Endian.little);
     _socket!.send(buf.buffer.asUint8List(), _targetAddress!, _targetPort);
+    _packetsSent++;
   }
 
   Future<void> _toggleStreaming() async {
@@ -142,6 +140,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
       setState(() {
         _streaming = false;
         _faceDetected = false;
+        _packetsSent = 0;
       });
       return;
     }
@@ -155,13 +154,12 @@ class _TrackerScreenState extends State<TrackerScreen> {
     }
 
     try {
-      final addresses = await InternetAddress.lookup(ip);
-      if (addresses.isEmpty) throw Exception('Could not resolve IP');
-      _targetAddress = addresses.first;
+      // Directly use IP string — no DNS lookup that can fail silently
+      _targetAddress = InternetAddress(ip);
       _targetPort = port;
       setState(() => _streaming = true);
     } catch (e) {
-      _showError('Could not connect: $e');
+      _showError('Invalid IP address: $e');
     }
   }
 
@@ -176,7 +174,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // ARKit view runs hidden — 1px to keep it alive
+          // ARKit view — 1px to keep it alive without showing camera feed
           SizedBox(
             width: 1,
             height: 1,
@@ -275,7 +273,23 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 16),
+
+                  // Packet counter
+                  Center(
+                    child: Text(
+                      'Packets sent: $_packetsSent',
+                      style: TextStyle(
+                        color: _packetsSent > 0
+                            ? const Color(0xFF00D4FF)
+                            : Colors.grey,
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 24),
 
                   // Live pose values
                   const Text(
@@ -300,7 +314,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                   const Spacer(),
 
-                  // Info footer
                   const Text(
                     'Uses front TrueDepth camera. Point phone at your face.',
                     style: TextStyle(color: Colors.grey, fontSize: 12),
@@ -323,7 +336,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   }
 }
 
-// ── Widgets ──────────────────────────────────────────────────────────────────
+// ── Widgets ───────────────────────────────────────────────────────────────────
 
 class _StatusDot extends StatelessWidget {
   final bool streaming;
