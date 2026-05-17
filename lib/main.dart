@@ -43,6 +43,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
   bool _faceDetected = false;
   bool _showCamera = false;
 
+  // Face mesh node name so we can update it
+  static const _faceMeshNodeName = 'face_mesh';
+
   double _yaw = 0, _pitch = 0, _roll = 0;
   double _x = 0, _y = 0, _z = 0;
 
@@ -62,6 +65,11 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   void _handleAnchor(ARKitAnchor anchor) {
     if (anchor is! ARKitFaceAnchor) return;
+
+    // Update face mesh if camera preview is on
+    if (_showCamera) {
+      _updateFaceMesh(anchor);
+    }
 
     final t = anchor.transform;
 
@@ -100,6 +108,24 @@ class _TrackerScreenState extends State<TrackerScreen> {
       _z = z;
       _faceDetected = true;
     });
+  }
+
+  void _updateFaceMesh(ARKitFaceAnchor anchor) {
+    if (_arkitController == null) return;
+
+    final material = ARKitMaterial(
+      fillMode: ARKitFillMode.lines,
+      diffuse: ARKitMaterialProperty.color(const Color(0x8800D4FF)),
+    );
+    anchor.geometry.materials.value = [material];
+
+    final node = ARKitNode(
+      name: _faceMeshNodeName,
+      geometry: anchor.geometry,
+    );
+
+    _arkitController!.remove(_faceMeshNodeName);
+    _arkitController!.add(node, parentNodeName: anchor.nodeName);
   }
 
   void _sendPose(
@@ -153,16 +179,17 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+
     return Scaffold(
       body: Stack(
         children: [
-          // ARKit view — fills screen when camera preview is on, 1px when off
-          AnimatedPositioned(
-            duration: const Duration(milliseconds: 300),
+          // ARKit fills entire screen edge to edge — no SafeArea gap
+          Positioned(
             top: 0,
             left: 0,
             right: 0,
-            height: _showCamera ? MediaQuery.of(context).size.height : 1,
+            height: _showCamera ? screenHeight : 1,
             child: ARKitSceneView(
               configuration: ARKitConfiguration.faceTracking,
               onARKitViewCreated: _onARKitViewCreated,
@@ -170,7 +197,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
             ),
           ),
 
-          // Dark overlay when camera is showing so UI is still readable
+          // Gradient overlay when camera is showing
           if (_showCamera)
             Positioned.fill(
               child: Container(
@@ -180,14 +207,15 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     end: Alignment.bottomCenter,
                     colors: [
                       Colors.transparent,
-                      Color(0xCC000000),
+                      Color(0xEE000000),
                     ],
-                    stops: [0.3, 0.7],
+                    stops: [0.45, 0.72],
                   ),
                 ),
               ),
             ),
 
+          // UI — uses SafeArea only for the content, not ARKit
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
@@ -206,9 +234,14 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         ),
                       ),
                       const Spacer(),
-                      // Camera preview toggle
                       GestureDetector(
-                        onTap: () => setState(() => _showCamera = !_showCamera),
+                        onTap: () {
+                          // Remove mesh when hiding camera
+                          if (_showCamera) {
+                            _arkitController?.remove(_faceMeshNodeName);
+                          }
+                          setState(() => _showCamera = !_showCamera);
+                        },
                         child: Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 10, vertical: 6),
@@ -265,9 +298,30 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     ],
                   ),
 
+                  // Pose grid only when camera is hidden
+                  if (!_showCamera) ...[
+                    const SizedBox(height: 32),
+                    const Text(
+                      'LIVE POSE',
+                      style: TextStyle(
+                          color: Colors.grey, fontSize: 11, letterSpacing: 1.5),
+                    ),
+                    const SizedBox(height: 12),
+                    _PoseGrid(
+                      values: {
+                        'YAW': _yaw,
+                        'PITCH': _pitch,
+                        'ROLL': _roll,
+                        'X': _x,
+                        'Y': _y,
+                        'Z': _z,
+                      },
+                    ),
+                  ],
+
                   const Spacer(),
 
-                  // Bottom controls — always visible
+                  // Bottom controls
                   _InputField(
                     controller: _ipController,
                     label: 'PC IP Address',
@@ -327,33 +381,12 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
-
-                  // Pose grid — hidden when camera preview is on to reduce clutter
-                  if (!_showCamera) ...[
-                    const Text(
-                      'LIVE POSE',
-                      style: TextStyle(
-                          color: Colors.grey, fontSize: 11, letterSpacing: 1.5),
-                    ),
-                    const SizedBox(height: 12),
-                    _PoseGrid(
-                      values: {
-                        'YAW': _yaw,
-                        'PITCH': _pitch,
-                        'ROLL': _roll,
-                        'X': _x,
-                        'Y': _y,
-                        'Z': _z,
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                  ],
+                  const SizedBox(height: 8),
 
                   Center(
                     child: Text(
                       _showCamera
-                          ? 'Check framing and lighting above'
+                          ? 'Face mesh shows tracking coverage'
                           : 'Uses front TrueDepth camera. Point phone at your face.',
                       style: const TextStyle(color: Colors.grey, fontSize: 12),
                       textAlign: TextAlign.center,
