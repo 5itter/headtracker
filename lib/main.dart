@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:arkit_plugin/arkit_plugin.dart';
 
 void main() => runApp(const HeadTrackerApp());
@@ -43,7 +44,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
   bool _faceDetected = false;
   bool _showCamera = false;
 
-  // Face mesh node name so we can update it
   static const _faceMeshNodeName = 'face_mesh';
 
   double _yaw = 0, _pitch = 0, _roll = 0;
@@ -66,13 +66,11 @@ class _TrackerScreenState extends State<TrackerScreen> {
   void _handleAnchor(ARKitAnchor anchor) {
     if (anchor is! ARKitFaceAnchor) return;
 
-    // Update face mesh if camera preview is on
     if (_showCamera) {
       _updateFaceMesh(anchor);
     }
 
     final t = anchor.transform;
-
     final r20 = t.entry(2, 0);
     final r21 = t.entry(2, 1);
     final r22 = t.entry(2, 2);
@@ -112,18 +110,12 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   void _updateFaceMesh(ARKitFaceAnchor anchor) {
     if (_arkitController == null) return;
-
     final material = ARKitMaterial(
       fillMode: ARKitFillMode.lines,
       diffuse: ARKitMaterialProperty.color(const Color(0x8800D4FF)),
     );
     anchor.geometry.materials.value = [material];
-
-    final node = ARKitNode(
-      name: _faceMeshNodeName,
-      geometry: anchor.geometry,
-    );
-
+    final node = ARKitNode(name: _faceMeshNodeName, geometry: anchor.geometry);
     _arkitController!.remove(_faceMeshNodeName);
     _arkitController!.add(node, parentNodeName: anchor.nodeName);
   }
@@ -152,15 +144,12 @@ class _TrackerScreenState extends State<TrackerScreen> {
       });
       return;
     }
-
     final ip = _ipController.text.trim();
     final port = int.tryParse(_portController.text.trim());
-
     if (ip.isEmpty || port == null) {
       _showError('Enter a valid IP and port');
       return;
     }
-
     try {
       _targetAddress = InternetAddress(ip);
       _targetPort = port;
@@ -179,85 +168,100 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final screenHeight = MediaQuery.of(context).size.height;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      // Make status bar transparent so ARKit can show behind it cleanly
+      value: SystemUiOverlayStyle.light.copyWith(
+        statusBarColor: Colors.transparent,
+      ),
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0A0A0A),
+        body: Stack(
+          children: [
+            // ARKit — always full screen size, camera visible only when _showCamera
+            if (_showCamera)
+              Positioned.fill(
+                child: ARKitSceneView(
+                  configuration: ARKitConfiguration.faceTracking,
+                  onARKitViewCreated: _onARKitViewCreated,
+                  showStatistics: false,
+                ),
+              )
+            else
+              SizedBox(
+                width: 1,
+                height: 1,
+                child: ARKitSceneView(
+                  configuration: ARKitConfiguration.faceTracking,
+                  onARKitViewCreated: _onARKitViewCreated,
+                  showStatistics: false,
+                ),
+              ),
 
-    return Scaffold(
-      body: Stack(
-        children: [
-          // ARKit fills entire screen edge to edge — no SafeArea gap
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            height: _showCamera ? screenHeight : 1,
-            child: ARKitSceneView(
-              configuration: ARKitConfiguration.faceTracking,
-              onARKitViewCreated: _onARKitViewCreated,
-              showStatistics: false,
-            ),
-          ),
-
-          // Gradient overlay when camera is showing
-          if (_showCamera)
-            Positioned.fill(
-              child: Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.transparent,
-                      Color(0xEE000000),
-                    ],
-                    stops: [0.45, 0.72],
+            // Gradient overlay when camera showing
+            if (_showCamera)
+              Positioned.fill(
+                child: Container(
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Colors.transparent, Color(0xEE000000)],
+                      stops: [0.4, 0.68],
+                    ),
                   ),
                 ),
               ),
-            ),
 
-          // UI — uses SafeArea only for the content, not ARKit
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Header
-                  Row(
-                    children: [
-                      const Text(
-                        'HeadTracker',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
+            // Solid background at top when camera hidden — covers any leak
+            if (!_showCamera)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: MediaQuery.of(context).padding.top + 60,
+                child: Container(color: const Color(0xFF0A0A0A)),
+              ),
+
+            // UI
+            SafeArea(
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
+                      children: [
+                        const Text(
+                          'HeadTracker',
+                          style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white),
                         ),
-                      ),
-                      const Spacer(),
-                      GestureDetector(
-                        onTap: () {
-                          // Remove mesh when hiding camera
-                          if (_showCamera) {
-                            _arkitController?.remove(_faceMeshNodeName);
-                          }
-                          setState(() => _showCamera = !_showCamera);
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: _showCamera
-                                ? const Color(0xFF003A4A)
-                                : const Color(0xFF1A1A1A),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
+                        const Spacer(),
+                        GestureDetector(
+                          onTap: () {
+                            if (_showCamera)
+                              _arkitController?.remove(_faceMeshNodeName);
+                            setState(() => _showCamera = !_showCamera);
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
                               color: _showCamera
-                                  ? const Color(0xFF00D4FF)
-                                  : Colors.grey.withOpacity(0.3),
+                                  ? const Color(0xFF003A4A)
+                                  : const Color(0xFF1A1A1A),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: _showCamera
+                                    ? const Color(0xFF00D4FF)
+                                    : Colors.grey.withOpacity(0.3),
+                              ),
                             ),
-                          ),
-                          child: Row(
-                            children: [
+                            child: Row(children: [
                               Icon(
                                 _showCamera
                                     ? Icons.videocam
@@ -277,127 +281,143 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                   fontSize: 12,
                                 ),
                               ),
-                            ],
+                            ]),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      _StatusDot(
-                          streaming: _streaming, faceDetected: _faceDetected),
-                      const SizedBox(width: 6),
-                      Text(
-                        _streaming
-                            ? (_faceDetected ? '$_fps fps' : 'No face')
-                            : 'Stopped',
-                        style: TextStyle(
-                          color: _streaming && _faceDetected
-                              ? const Color(0xFF00D4FF)
-                              : Colors.grey,
+                        const SizedBox(width: 12),
+                        _StatusDot(
+                            streaming: _streaming, faceDetected: _faceDetected),
+                        const SizedBox(width: 6),
+                        Text(
+                          _streaming
+                              ? (_faceDetected ? '$_fps fps' : 'No face')
+                              : 'Stopped',
+                          style: TextStyle(
+                            color: _streaming && _faceDetected
+                                ? const Color(0xFF00D4FF)
+                                : Colors.grey,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-
-                  // Pose grid only when camera is hidden
-                  if (!_showCamera) ...[
-                    const SizedBox(height: 32),
-                    const Text(
-                      'LIVE POSE',
-                      style: TextStyle(
-                          color: Colors.grey, fontSize: 11, letterSpacing: 1.5),
+                      ],
                     ),
-                    const SizedBox(height: 12),
-                    _PoseGrid(
-                      values: {
+
+                    const SizedBox(height: 24),
+
+                    // Pose grid — only when camera hidden
+                    if (!_showCamera) ...[
+                      const Text('LIVE POSE',
+                          style: TextStyle(
+                              color: Colors.grey,
+                              fontSize: 11,
+                              letterSpacing: 1.5)),
+                      const SizedBox(height: 12),
+                      _PoseGrid(values: {
                         'YAW': _yaw,
                         'PITCH': _pitch,
                         'ROLL': _roll,
                         'X': _x,
                         'Y': _y,
-                        'Z': _z,
-                      },
-                    ),
-                  ],
+                        'Z': _z
+                      }),
+                      const SizedBox(height: 24),
+                    ],
 
-                  const Spacer(),
+                    // IP + Port — right below pose grid, no gap
+                    if (!_showCamera) ...[
+                      _InputField(
+                          controller: _ipController,
+                          label: 'PC IP Address',
+                          hint: '192.168.1.100',
+                          enabled: !_streaming),
+                      const SizedBox(height: 12),
+                      _InputField(
+                          controller: _portController,
+                          label: 'Port',
+                          hint: '4242',
+                          enabled: !_streaming,
+                          keyboardType: TextInputType.number),
+                      const SizedBox(height: 20),
+                    ],
 
-                  // Bottom controls
-                  _InputField(
-                    controller: _ipController,
-                    label: 'PC IP Address',
-                    hint: '192.168.1.100',
-                    enabled: !_streaming,
-                  ),
-                  const SizedBox(height: 12),
-                  _InputField(
-                    controller: _portController,
-                    label: 'Port',
-                    hint: '4242',
-                    enabled: !_streaming,
-                    keyboardType: TextInputType.number,
-                  ),
-                  const SizedBox(height: 20),
+                    const Spacer(),
 
-                  SizedBox(
-                    width: double.infinity,
-                    height: 52,
-                    child: ElevatedButton(
-                      onPressed: _toggleStreaming,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _streaming
-                            ? const Color(0xFF3A0000)
-                            : const Color(0xFF003A4A),
-                        foregroundColor: _streaming
-                            ? Colors.redAccent
-                            : const Color(0xFF00D4FF),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                          side: BorderSide(
-                            color: _streaming
-                                ? Colors.redAccent
-                                : const Color(0xFF00D4FF),
+                    // IP + Port in camera mode at bottom
+                    if (_showCamera) ...[
+                      _InputField(
+                          controller: _ipController,
+                          label: 'PC IP Address',
+                          hint: '192.168.1.100',
+                          enabled: !_streaming),
+                      const SizedBox(height: 12),
+                      _InputField(
+                          controller: _portController,
+                          label: 'Port',
+                          hint: '4242',
+                          enabled: !_streaming,
+                          keyboardType: TextInputType.number),
+                      const SizedBox(height: 20),
+                    ],
+
+                    // Start/Stop
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: ElevatedButton(
+                        onPressed: _toggleStreaming,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _streaming
+                              ? const Color(0xFF3A0000)
+                              : const Color(0xFF003A4A),
+                          foregroundColor: _streaming
+                              ? Colors.redAccent
+                              : const Color(0xFF00D4FF),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            side: BorderSide(
+                                color: _streaming
+                                    ? Colors.redAccent
+                                    : const Color(0xFF00D4FF)),
                           ),
+                          elevation: 0,
                         ),
-                        elevation: 0,
+                        child: Text(
+                          _streaming ? 'Stop Tracking' : 'Start Tracking',
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
                       ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    Center(
                       child: Text(
-                        _streaming ? 'Stop Tracking' : 'Start Tracking',
-                        style: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w600),
+                        'Packets sent: $_packetsSent',
+                        style: TextStyle(
+                          color: _packetsSent > 0
+                              ? const Color(0xFF00D4FF)
+                              : Colors.grey,
+                          fontSize: 13,
+                          fontFamily: 'monospace',
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-
-                  Center(
-                    child: Text(
-                      'Packets sent: $_packetsSent',
-                      style: TextStyle(
-                        color: _packetsSent > 0
-                            ? const Color(0xFF00D4FF)
-                            : Colors.grey,
-                        fontSize: 13,
-                        fontFamily: 'monospace',
+                    const SizedBox(height: 8),
+                    Center(
+                      child: Text(
+                        _showCamera
+                            ? 'Face mesh shows tracking coverage'
+                            : 'Uses front TrueDepth camera.',
+                        style:
+                            const TextStyle(color: Colors.grey, fontSize: 12),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-
-                  Center(
-                    child: Text(
-                      _showCamera
-                          ? 'Face mesh shows tracking coverage'
-                          : 'Uses front TrueDepth camera. Point phone at your face.',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
+                    const SizedBox(height: 8),
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -410,12 +430,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
   }
 }
 
-// ── Widgets ───────────────────────────────────────────────────────────────────
-
 class _StatusDot extends StatelessWidget {
   final bool streaming;
   final bool faceDetected;
-
   const _StatusDot({required this.streaming, required this.faceDetected});
 
   @override
@@ -427,7 +444,6 @@ class _StatusDot extends StatelessWidget {
       color = const Color(0xFF00D4FF);
     else
       color = Colors.orange;
-
     return Container(
       width: 10,
       height: 10,
@@ -444,18 +460,15 @@ class _StatusDot extends StatelessWidget {
 
 class _InputField extends StatelessWidget {
   final TextEditingController controller;
-  final String label;
-  final String hint;
+  final String label, hint;
   final bool enabled;
   final TextInputType keyboardType;
-
-  const _InputField({
-    required this.controller,
-    required this.label,
-    required this.hint,
-    required this.enabled,
-    this.keyboardType = TextInputType.text,
-  });
+  const _InputField(
+      {required this.controller,
+      required this.label,
+      required this.hint,
+      required this.enabled,
+      this.keyboardType = TextInputType.text});
 
   @override
   Widget build(BuildContext context) {
@@ -472,13 +485,11 @@ class _InputField extends StatelessWidget {
         filled: true,
         fillColor: const Color(0xFF1A1A1A),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide.none,
-        ),
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide.none),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: Color(0xFF00D4FF)),
-        ),
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF00D4FF))),
       ),
     );
   }
@@ -486,12 +497,10 @@ class _InputField extends StatelessWidget {
 
 class _PoseGrid extends StatelessWidget {
   final Map<String, double> values;
-
   const _PoseGrid({required this.values});
 
   @override
   Widget build(BuildContext context) {
-    final entries = values.entries.toList();
     return GridView.count(
       crossAxisCount: 3,
       shrinkWrap: true,
@@ -499,35 +508,31 @@ class _PoseGrid extends StatelessWidget {
       childAspectRatio: 2.2,
       mainAxisSpacing: 8,
       crossAxisSpacing: 8,
-      children: entries.map((e) {
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1A1A1A),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                e.key,
-                style: const TextStyle(
-                    color: Colors.grey, fontSize: 10, letterSpacing: 1),
-              ),
-              Text(
-                e.value.toStringAsFixed(1),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        );
-      }).toList(),
+      children: values.entries
+          .map((e) => Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                    color: const Color(0xFF1A1A1A),
+                    borderRadius: BorderRadius.circular(8)),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(e.key,
+                          style: const TextStyle(
+                              color: Colors.grey,
+                              fontSize: 10,
+                              letterSpacing: 1)),
+                      Text(e.value.toStringAsFixed(1),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.w500)),
+                    ]),
+              ))
+          .toList(),
     );
   }
 }
