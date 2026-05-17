@@ -41,6 +41,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   bool _streaming = false;
   bool _faceDetected = false;
+  bool _showCamera = false;
 
   double _yaw = 0, _pitch = 0, _roll = 0;
   double _x = 0, _y = 0, _z = 0;
@@ -52,8 +53,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   final _ipController = TextEditingController(text: '192.168.1.100');
   final _portController = TextEditingController(text: '4242');
-
-  // NO initState socket creation — socket is created when user taps Start
 
   void _onARKitViewCreated(ARKitController controller) {
     _arkitController = controller;
@@ -88,7 +87,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
       _lastFpsCheck = now;
     }
 
-    // Send UDP immediately — no queue, no wait
     if (_streaming && _socket != null && _targetAddress != null) {
       _sendPose(yaw, pitch, roll, x, y, z);
     }
@@ -105,13 +103,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   }
 
   void _sendPose(
-    double yaw,
-    double pitch,
-    double roll,
-    double x,
-    double y,
-    double z,
-  ) {
+      double yaw, double pitch, double roll, double x, double y, double z) {
     final buf = ByteData(48);
     buf.setFloat64(0, x, Endian.little);
     buf.setFloat64(8, y, Endian.little);
@@ -146,11 +138,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
     try {
       _targetAddress = InternetAddress(ip);
       _targetPort = port;
-
-      // Create socket HERE after user interaction — not in initState
-      // This ensures iOS network permission is granted before socket is created
       _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-
       setState(() => _streaming = true);
     } catch (e) {
       _showError('Error: $e');
@@ -168,20 +156,45 @@ class _TrackerScreenState extends State<TrackerScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          SizedBox(
-            width: 1,
-            height: 1,
+          // ARKit view — fills screen when camera preview is on, 1px when off
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 300),
+            top: 0,
+            left: 0,
+            right: 0,
+            height: _showCamera ? MediaQuery.of(context).size.height : 1,
             child: ARKitSceneView(
               configuration: ARKitConfiguration.faceTracking,
               onARKitViewCreated: _onARKitViewCreated,
+              showStatistics: false,
             ),
           ),
+
+          // Dark overlay when camera is showing so UI is still readable
+          if (_showCamera)
+            Positioned.fill(
+              child: Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Color(0xCC000000),
+                    ],
+                    stops: [0.3, 0.7],
+                  ),
+                ),
+              ),
+            ),
+
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Header
                   Row(
                     children: [
                       const Text(
@@ -193,11 +206,52 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         ),
                       ),
                       const Spacer(),
-                      _StatusDot(
-                        streaming: _streaming,
-                        faceDetected: _faceDetected,
+                      // Camera preview toggle
+                      GestureDetector(
+                        onTap: () => setState(() => _showCamera = !_showCamera),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: _showCamera
+                                ? const Color(0xFF003A4A)
+                                : const Color(0xFF1A1A1A),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: _showCamera
+                                  ? const Color(0xFF00D4FF)
+                                  : Colors.grey.withOpacity(0.3),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                _showCamera
+                                    ? Icons.videocam
+                                    : Icons.videocam_off,
+                                size: 16,
+                                color: _showCamera
+                                    ? const Color(0xFF00D4FF)
+                                    : Colors.grey,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _showCamera ? 'Hide' : 'Preview',
+                                style: TextStyle(
+                                  color: _showCamera
+                                      ? const Color(0xFF00D4FF)
+                                      : Colors.grey,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 12),
+                      _StatusDot(
+                          streaming: _streaming, faceDetected: _faceDetected),
+                      const SizedBox(width: 6),
                       Text(
                         _streaming
                             ? (_faceDetected ? '$_fps fps' : 'No face')
@@ -210,7 +264,10 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 32),
+
+                  const Spacer(),
+
+                  // Bottom controls — always visible
                   _InputField(
                     controller: _ipController,
                     label: 'PC IP Address',
@@ -225,7 +282,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     enabled: !_streaming,
                     keyboardType: TextInputType.number,
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 20),
+
                   SizedBox(
                     width: double.infinity,
                     height: 52,
@@ -251,13 +309,12 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       child: Text(
                         _streaming ? 'Stop Tracking' : 'Start Tracking',
                         style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
+                            fontSize: 16, fontWeight: FontWeight.w600),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
+
                   Center(
                     child: Text(
                       'Packets sent: $_packetsSent',
@@ -270,32 +327,39 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    'LIVE POSE',
-                    style: TextStyle(
-                      color: Colors.grey,
-                      fontSize: 11,
-                      letterSpacing: 1.5,
+                  const SizedBox(height: 16),
+
+                  // Pose grid — hidden when camera preview is on to reduce clutter
+                  if (!_showCamera) ...[
+                    const Text(
+                      'LIVE POSE',
+                      style: TextStyle(
+                          color: Colors.grey, fontSize: 11, letterSpacing: 1.5),
+                    ),
+                    const SizedBox(height: 12),
+                    _PoseGrid(
+                      values: {
+                        'YAW': _yaw,
+                        'PITCH': _pitch,
+                        'ROLL': _roll,
+                        'X': _x,
+                        'Y': _y,
+                        'Z': _z,
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+
+                  Center(
+                    child: Text(
+                      _showCamera
+                          ? 'Check framing and lighting above'
+                          : 'Uses front TrueDepth camera. Point phone at your face.',
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                      textAlign: TextAlign.center,
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  _PoseGrid(
-                    values: {
-                      'YAW': _yaw,
-                      'PITCH': _pitch,
-                      'ROLL': _roll,
-                      'X': _x,
-                      'Y': _y,
-                      'Z': _z,
-                    },
-                  ),
-                  const Spacer(),
-                  const Text(
-                    'Uses front TrueDepth camera. Point phone at your face.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12),
-                    textAlign: TextAlign.center,
-                  ),
+                  const SizedBox(height: 8),
                 ],
               ),
             ),
@@ -416,10 +480,7 @@ class _PoseGrid extends StatelessWidget {
               Text(
                 e.key,
                 style: const TextStyle(
-                  color: Colors.grey,
-                  fontSize: 10,
-                  letterSpacing: 1,
-                ),
+                    color: Colors.grey, fontSize: 10, letterSpacing: 1),
               ),
               Text(
                 e.value.toStringAsFixed(1),
