@@ -23,7 +23,7 @@ import Flutter
                     }
                     result(true)
                 } else {
-                    result(FlutterError(code: "BAD_ARGS", message: "Arguments malformed", detail: nil))
+                    result(FlutterError(code: "BAD_ARGS", message: "Arguments malformed", details: nil))
                 }
             } else {
                 result(FlutterMethodNotImplemented)
@@ -31,6 +31,6 @@ import Flutter
         })
 
         GeneratedPluginRegistrant.register(with: self)
-        return super.application(application, LobsterLaunchOptions: launchOptions)
+        return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
 }
