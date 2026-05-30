@@ -35,14 +35,25 @@ class TrackerScreen extends StatefulWidget {
 }
 
 class _TrackerScreenState extends State<TrackerScreen> {
+  // Native Platform Gateways for Hardware Screen Control
+  static const _platformChannel = MethodChannel('com.headtracker.app/native');
+
   ARKitController? _arkitController;
-  RawDatagramSocket? _socket;
+  RawDatagramSocket? _udpSocket;
+  ServerSocket? _tcpServer;
+  Socket? _tcpClientSocket;
+
   InternetAddress? _targetAddress;
   int _targetPort = 4242;
 
   bool _streaming = false;
   bool _faceDetected = false;
   bool _showCamera = false;
+  bool _nodeBound = false;
+
+  // Interface Configuration States
+  bool _isUsbMode = false; // Toggles between Wi-Fi (UDP) and USB (TCP Server)
+  bool _proximityActive = false; // Manages proximity monitoring state
 
   static const _faceMeshNodeName = 'face_mesh';
 
@@ -52,10 +63,32 @@ class _TrackerScreenState extends State<TrackerScreen> {
   int _fps = 0;
   int _frameCount = 0;
   int _packetsSent = 0;
+
   DateTime _lastFpsCheck = DateTime.now();
+  DateTime _lastUiUpdate = DateTime.now();
 
   final _ipController = TextEditingController(text: '192.168.1.100');
   final _portController = TextEditingController(text: '4242');
+
+  final ByteData _packetBuffer = ByteData(48);
+  late Uint8List _packetUint8ListView;
+
+  @override
+  void initState() {
+    super.initState();
+    _packetUint8ListView = _packetBuffer.buffer.asUint8List();
+  }
+
+  // Invokes native hardware proximity calls to cut display backlight power safely
+  Future<void> _setProximitySensor(bool enable) async {
+    try {
+      await _platformChannel
+          .invokeMethod('toggleProximity', {'enable': enable});
+      setState(() => _proximityActive = enable);
+    } catch (e) {
+      // Gracefully handles overrides if working inside virtualization emulators
+    }
+  }
 
   void _onARKitViewCreated(ARKitController controller) {
     _arkitController = controller;
@@ -66,10 +99,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   void _handleAnchor(ARKitAnchor anchor) {
     if (anchor is! ARKitFaceAnchor) return;
 
-    if (_showCamera) {
-      _updateFaceMesh(anchor);
-    }
-
+    // 1. EXTRACT TRACKING COORDINATES
     final t = anchor.transform;
     final r20 = t.entry(2, 0);
     final r21 = t.entry(2, 1);
@@ -85,6 +115,35 @@ class _TrackerScreenState extends State<TrackerScreen> {
     final y = t.entry(1, 3) * 100.0;
     final z = t.entry(2, 3) * 100.0;
 
+    // 2. IMMEDIATE HOT PATH STREAM ROUTER
+    if (_streaming) {
+      _packetBuffer.setFloat64(0, x, Endian.little);
+      _packetBuffer.setFloat64(8, y, Endian.little);
+      _packetBuffer.setFloat64(16, z, Endian.little);
+      _packetBuffer.setFloat64(24, yaw, Endian.little);
+      _packetBuffer.setFloat64(32, pitch, Endian.little);
+      _packetBuffer.setFloat64(40, roll, Endian.little);
+
+      if (_isUsbMode) {
+        // High-Speed Cable Pipeline (TCP Stream)
+        if (_tcpClientSocket != null) {
+          _tcpClientSocket!.add(_packetUint8ListView);
+          _packetsSent++;
+        }
+      } else {
+        // Standard Wireless Pipeline (UDP Packet)
+        if (_udpSocket != null && _targetAddress != null) {
+          _udpSocket!.send(_packetUint8ListView, _targetAddress!, _targetPort);
+          _packetsSent++;
+        }
+      }
+    }
+
+    // HARDWARE SCREEN-OFF PIPELINE BYPASS:
+    // If proximity tracking cuts the screen, bypass UI execution contexts instantly.
+    if (_proximityActive) return;
+
+    // 3. PERFORMANCE LOGGING EVALUATION
     _frameCount++;
     final now = DateTime.now();
     if (now.difference(_lastFpsCheck).inMilliseconds >= 1000) {
@@ -93,50 +152,57 @@ class _TrackerScreenState extends State<TrackerScreen> {
       _lastFpsCheck = now;
     }
 
-    if (_streaming && _socket != null && _targetAddress != null) {
-      _sendPose(yaw, pitch, roll, x, y, z);
+    // 4. LOW-OVERHEAD GEOMETRY SYNCHRONIZATION
+    if (_showCamera) {
+      _updateFaceMesh(anchor);
     }
 
-    setState(() {
-      _yaw = yaw;
-      _pitch = pitch;
-      _roll = roll;
-      _x = x;
-      _y = y;
-      _z = z;
-      _faceDetected = true;
-    });
+    // 5. VISUAL LAYOUT ENGINE THROTTLE
+    final bool shouldUpdateUiLayout =
+        _showCamera || (now.difference(_lastUiUpdate).inMilliseconds >= 100);
+
+    if (shouldUpdateUiLayout) {
+      _lastUiUpdate = now;
+      setState(() {
+        _yaw = yaw;
+        _pitch = pitch;
+        _roll = roll;
+        _x = x;
+        _y = y;
+        _z = z;
+        _faceDetected = true;
+      });
+    } else if (!_faceDetected) {
+      setState(() => _faceDetected = true);
+    }
   }
 
   void _updateFaceMesh(ARKitFaceAnchor anchor) {
-    if (_arkitController == null) return;
+    if (_arkitController == null || _nodeBound) return;
+
     final material = ARKitMaterial(
       fillMode: ARKitFillMode.lines,
       diffuse: ARKitMaterialProperty.color(const Color(0x8800D4FF)),
     );
     anchor.geometry.materials.value = [material];
-    final node = ARKitNode(name: _faceMeshNodeName, geometry: anchor.geometry);
-    _arkitController!.remove(_faceMeshNodeName);
-    _arkitController!.add(node, parentNodeName: anchor.nodeName);
-  }
 
-  void _sendPose(
-      double yaw, double pitch, double roll, double x, double y, double z) {
-    final buf = ByteData(48);
-    buf.setFloat64(0, x, Endian.little);
-    buf.setFloat64(8, y, Endian.little);
-    buf.setFloat64(16, z, Endian.little);
-    buf.setFloat64(24, yaw, Endian.little);
-    buf.setFloat64(32, pitch, Endian.little);
-    buf.setFloat64(40, roll, Endian.little);
-    _socket!.send(buf.buffer.asUint8List(), _targetAddress!, _targetPort);
-    _packetsSent++;
+    final node = ARKitNode(name: _faceMeshNodeName, geometry: anchor.geometry);
+    _arkitController!.add(node, parentNodeName: anchor.nodeName);
+    _nodeBound = true;
   }
 
   Future<void> _toggleStreaming() async {
     if (_streaming) {
-      _socket?.close();
-      _socket = null;
+      _udpSocket?.close();
+      _udpSocket = null;
+      _tcpClientSocket?.close();
+      _tcpClientSocket = null;
+      _tcpServer?.close();
+      _tcpServer = null;
+
+      _setProximitySensor(
+          false); // Restore native hardware screen states safely
+
       setState(() {
         _streaming = false;
         _faceDetected = false;
@@ -144,19 +210,46 @@ class _TrackerScreenState extends State<TrackerScreen> {
       });
       return;
     }
-    final ip = _ipController.text.trim();
+
     final port = int.tryParse(_portController.text.trim());
-    if (ip.isEmpty || port == null) {
-      _showError('Enter a valid IP and port');
+    if (port == null) {
+      _showError('Enter a valid port number');
       return;
     }
-    try {
-      _targetAddress = InternetAddress(ip);
-      _targetPort = port;
-      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-      setState(() => _streaming = true);
-    } catch (e) {
-      _showError('Error: $e');
+
+    if (_isUsbMode) {
+      // Initialize USB Communication Interface Layer (TCP Server Architecture)
+      try {
+        _targetPort = port;
+        _tcpServer = await ServerSocket.bind(InternetAddress.anyIPv4, port);
+        setState(() => _streaming = true);
+
+        _tcpServer!.listen((Socket client) {
+          _tcpClientSocket = client;
+          // OPTIMIZATION: Kill Nagle's algorithm to transmit telemetry updates immediately
+          _tcpClientSocket!.setOption(SocketOption.tcpNoDelay, true);
+          setState(() => _faceDetected = true);
+        }, onError: (err) {
+          _showError('USB Stream Error: $err');
+        });
+      } catch (e) {
+        _showError('Failed to initialize USB Server: $e');
+      }
+    } else {
+      // Initialize Wireless Communication Interface Layer (UDP Architecture)
+      final ip = _ipController.text.trim();
+      if (ip.isEmpty) {
+        _showError('Enter a valid target IP address');
+        return;
+      }
+      try {
+        _targetAddress = InternetAddress(ip);
+        _targetPort = port;
+        _udpSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+        setState(() => _streaming = true);
+      } catch (e) {
+        _showError('Failed to open Wi-Fi Socket: $e');
+      }
     }
   }
 
@@ -169,7 +262,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
   @override
   Widget build(BuildContext context) {
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      // Make status bar transparent so ARKit can show behind it cleanly
       value: SystemUiOverlayStyle.light.copyWith(
         statusBarColor: Colors.transparent,
       ),
@@ -177,7 +269,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            // ARKit — always full screen size, camera visible only when _showCamera
+            // Structural Capture Elements
             if (_showCamera)
               Positioned.fill(
                 child: ARKitSceneView(
@@ -197,7 +289,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 ),
               ),
 
-            // Gradient overlay when camera showing
             if (_showCamera)
               Positioned.fill(
                 child: Container(
@@ -212,7 +303,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 ),
               ),
 
-            // Solid background at top when camera hidden — covers any leak
             if (!_showCamera)
               Positioned(
                 top: 0,
@@ -222,7 +312,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Container(color: const Color(0xFF0A0A0A)),
               ),
 
-            // UI
             SafeArea(
               child: Padding(
                 padding:
@@ -230,7 +319,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Header
                     Row(
                       children: [
                         const Text(
@@ -241,10 +329,51 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               color: Colors.white),
                         ),
                         const Spacer(),
+
+                        // Hardware Proximity Auto-Screen-Off Controller Option
+                        if (_streaming)
+                          GestureDetector(
+                            onTap: () => _setProximitySensor(!_proximityActive),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: _proximityActive
+                                    ? const Color(0xFF003A4A)
+                                    : const Color(0xFF1A1A1A),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                    color: _proximityActive
+                                        ? const Color(0xFF00D4FF)
+                                        : Colors.grey.withOpacity(0.2)),
+                              ),
+                              child: Row(children: [
+                                Icon(Icons.power_settings_new,
+                                    size: 16,
+                                    color: _proximityActive
+                                        ? const Color(0xFF00D4FF)
+                                        : Colors.grey),
+                                const SizedBox(width: 4),
+                                Text(
+                                    _proximityActive
+                                        ? 'Sensor Lock ON'
+                                        : 'Proximity Lock',
+                                    style: TextStyle(
+                                        color: _proximityActive
+                                            ? const Color(0xFF00D4FF)
+                                            : Colors.grey,
+                                        fontSize: 12)),
+                              ]),
+                            ),
+                          ),
+                        const SizedBox(width: 8),
+
                         GestureDetector(
                           onTap: () {
-                            if (_showCamera)
+                            if (_showCamera) {
                               _arkitController?.remove(_faceMeshNodeName);
+                              _nodeBound = false;
+                            }
                             setState(() => _showCamera = !_showCamera);
                           },
                           child: Container(
@@ -256,31 +385,26 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                   : const Color(0xFF1A1A1A),
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
-                                color: _showCamera
-                                    ? const Color(0xFF00D4FF)
-                                    : Colors.grey.withOpacity(0.3),
-                              ),
+                                  color: _showCamera
+                                      ? const Color(0xFF00D4FF)
+                                      : Colors.grey.withOpacity(0.3)),
                             ),
                             child: Row(children: [
                               Icon(
-                                _showCamera
-                                    ? Icons.videocam
-                                    : Icons.videocam_off,
-                                size: 16,
-                                color: _showCamera
-                                    ? const Color(0xFF00D4FF)
-                                    : Colors.grey,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _showCamera ? 'Hide' : 'Preview',
-                                style: TextStyle(
+                                  _showCamera
+                                      ? Icons.videocam
+                                      : Icons.videocam_off,
+                                  size: 16,
                                   color: _showCamera
                                       ? const Color(0xFF00D4FF)
-                                      : Colors.grey,
-                                  fontSize: 12,
-                                ),
-                              ),
+                                      : Colors.grey),
+                              const SizedBox(width: 4),
+                              Text(_showCamera ? 'Hide' : 'Preview',
+                                  style: TextStyle(
+                                      color: _showCamera
+                                          ? const Color(0xFF00D4FF)
+                                          : Colors.grey,
+                                      fontSize: 12)),
                             ]),
                           ),
                         ),
@@ -290,20 +414,48 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         const SizedBox(width: 6),
                         Text(
                           _streaming
-                              ? (_faceDetected ? '$_fps fps' : 'No face')
+                              ? (_faceDetected
+                                  ? '$_fps fps'
+                                  : (_isUsbMode ? 'Wired Idle' : 'No face'))
                               : 'Stopped',
                           style: TextStyle(
-                            color: _streaming && _faceDetected
-                                ? const Color(0xFF00D4FF)
-                                : Colors.grey,
-                          ),
+                              color: _streaming && _faceDetected
+                                  ? const Color(0xFF00D4FF)
+                                  : Colors.grey),
                         ),
                       ],
                     ),
 
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 20),
 
-                    // Pose grid — only when camera hidden
+                    // PROTOCOL MATRIX SELECTOR FIELD BUTTONS
+                    if (!_streaming)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ChoiceChip(
+                              label: const Center(
+                                  child: Text('Wi-Fi (Network UDP)')),
+                              selected: !_isUsbMode,
+                              onSelected: (val) =>
+                                  setState(() => _isUsbMode = false),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ChoiceChip(
+                              label:
+                                  const Center(child: Text('USB (Wired TCP)')),
+                              selected: _isUsbMode,
+                              onSelected: (val) =>
+                                  setState(() => _isUsbMode = true),
+                            ),
+                          ),
+                        ],
+                      ),
+
+                    const SizedBox(height: 20),
+
                     if (!_showCamera) ...[
                       const Text('LIVE POSE',
                           style: TextStyle(
@@ -322,43 +474,24 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       const SizedBox(height: 24),
                     ],
 
-                    // IP + Port — right below pose grid, no gap
-                    if (!_showCamera) ...[
+                    // Input Form Controllers (Conditionally hide the IP form field under wired configurations)
+                    if (!_isUsbMode) ...[
                       _InputField(
                           controller: _ipController,
                           label: 'PC IP Address',
                           hint: '192.168.1.100',
                           enabled: !_streaming),
                       const SizedBox(height: 12),
-                      _InputField(
-                          controller: _portController,
-                          label: 'Port',
-                          hint: '4242',
-                          enabled: !_streaming,
-                          keyboardType: TextInputType.number),
-                      const SizedBox(height: 20),
                     ],
+                    _InputField(
+                        controller: _portController,
+                        label: 'Port Mapping Node',
+                        hint: '4242',
+                        enabled: !_streaming,
+                        keyboardType: TextInputType.number),
 
                     const Spacer(),
 
-                    // IP + Port in camera mode at bottom
-                    if (_showCamera) ...[
-                      _InputField(
-                          controller: _ipController,
-                          label: 'PC IP Address',
-                          hint: '192.168.1.100',
-                          enabled: !_streaming),
-                      const SizedBox(height: 12),
-                      _InputField(
-                          controller: _portController,
-                          label: 'Port',
-                          hint: '4242',
-                          enabled: !_streaming,
-                          keyboardType: TextInputType.number),
-                      const SizedBox(height: 20),
-                    ],
-
-                    // Start/Stop
                     SizedBox(
                       width: double.infinity,
                       height: 52,
@@ -381,7 +514,11 @@ class _TrackerScreenState extends State<TrackerScreen> {
                           elevation: 0,
                         ),
                         child: Text(
-                          _streaming ? 'Stop Tracking' : 'Start Tracking',
+                          _streaming
+                              ? 'Stop Tracking Engine'
+                              : (_isUsbMode
+                                  ? 'Bind Wired USB Engine'
+                                  : 'Initialize Wireless Engine'),
                           style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w600),
                         ),
@@ -393,22 +530,27 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       child: Text(
                         'Packets sent: $_packetsSent',
                         style: TextStyle(
-                          color: _packetsSent > 0
-                              ? const Color(0xFF00D4FF)
-                              : Colors.grey,
-                          fontSize: 13,
-                          fontFamily: 'monospace',
-                        ),
+                            color: _packetsSent > 0
+                                ? const Color(0xFF00D4FF)
+                                : Colors.grey,
+                            fontSize: 13,
+                            fontFamily: 'monospace'),
                       ),
                     ),
                     const SizedBox(height: 8),
                     Center(
                       child: Text(
-                        _showCamera
-                            ? 'Face mesh shows tracking coverage'
-                            : 'Uses front TrueDepth camera.',
-                        style:
-                            const TextStyle(color: Colors.grey, fontSize: 12),
+                        _proximityActive
+                            ? 'PROXIMITY LOCK ACTIVE: Cover sensor to cut display power completely'
+                            : (_showCamera
+                                ? 'Face mesh shows tracking coverage'
+                                : 'Uses front TrueDepth camera module natively.'),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            color: _proximityActive
+                                ? Colors.orangeAccent
+                                : Colors.grey,
+                            fontSize: 12),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -425,36 +567,27 @@ class _TrackerScreenState extends State<TrackerScreen> {
   @override
   void dispose() {
     _arkitController?.dispose();
-    _socket?.close();
+    _udpSocket?.close();
+    _tcpClientSocket?.close();
+    _tcpServer?.close();
     super.dispose();
   }
 }
 
+// Keep original structures for rendering modules below...
 class _StatusDot extends StatelessWidget {
   final bool streaming;
   final bool faceDetected;
   const _StatusDot({required this.streaming, required this.faceDetected});
-
   @override
   Widget build(BuildContext context) {
-    Color color;
-    if (!streaming)
-      color = Colors.grey;
-    else if (faceDetected)
-      color = const Color(0xFF00D4FF);
-    else
-      color = Colors.orange;
+    Color color = !streaming
+        ? Colors.grey
+        : (faceDetected ? const Color(0xFF00D4FF) : Colors.orange);
     return Container(
-      width: 10,
-      height: 10,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        boxShadow: streaming && faceDetected
-            ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6)]
-            : null,
-      ),
-    );
+        width: 10,
+        height: 10,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle));
   }
 }
 
@@ -469,7 +602,6 @@ class _InputField extends StatelessWidget {
       required this.hint,
       required this.enabled,
       this.keyboardType = TextInputType.text});
-
   @override
   Widget build(BuildContext context) {
     return TextField(
@@ -498,7 +630,6 @@ class _InputField extends StatelessWidget {
 class _PoseGrid extends StatelessWidget {
   final Map<String, double> values;
   const _PoseGrid({required this.values});
-
   @override
   Widget build(BuildContext context) {
     return GridView.count(
