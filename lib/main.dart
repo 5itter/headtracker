@@ -204,7 +204,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
         _faceDetected = false;
         _packetsSent = 0;
         _screenBlackoutMode = false;
-        // Forces node binding flag to clear so next session initializes layout tracking cleanly
         _nodeBound = false;
       });
       return;
@@ -259,7 +258,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Evaluation check to ensure the camera is loaded ONLY when necessary
     final bool cameraIsRequired = _streaming || _showCamera;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -271,37 +269,25 @@ class _TrackerScreenState extends State<TrackerScreen> {
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            // LIFECYCLE MANAGED ARKIT SESSION ENGINE:
-            // Camera context initializes from memory ONLY when streaming data or canvas previews are open.
+            // FIXED RESENTION MATRIX: Viewport structure remains identical to protect blue anchors
             if (cameraIsRequired)
-              _showCamera && !_screenBlackoutMode
-                  ? Positioned.fill(
-                      child: ARKitSceneView(
-                        configuration: ARKitConfiguration.faceTracking,
-                        onARKitViewCreated: _onARKitViewCreated,
-                        showStatistics: false,
-                      ),
-                    )
-                  : SizedBox(
-                      width: 1,
-                      height: 1,
-                      child: ARKitSceneView(
-                        configuration: ARKitConfiguration.faceTracking,
-                        onARKitViewCreated: _onARKitViewCreated,
-                        showStatistics: false,
-                      ),
-                    )
+              Positioned.fill(
+                child: ARKitSceneView(
+                  configuration: ARKitConfiguration.faceTracking,
+                  onARKitViewCreated: _onARKitViewCreated,
+                  showStatistics: false,
+                ),
+              )
             else
-              const SizedBox
-                  .shrink(), // Camera fully unloaded from device stack context when idle
+              const SizedBox.shrink(),
 
-            // Opaque blocker panel covers background matrix operations during passive dashboard paths
+            // Mask layer blocks tracking feed artifacts completely during dashboard paths
             if (!_showCamera)
               Positioned.fill(
                 child: Container(color: const Color(0xFF0A0A0A)),
               ),
 
-            // Master User Interface View Container
+            // Main Core User Interface Container
             SafeArea(
               child: Padding(
                 padding:
@@ -309,7 +295,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Clean Header Status Tracking Bar Row
+                    // Clean Header Row (Hidden completely during canvas views)
                     if (!_showCamera)
                       Row(
                         children: [
@@ -343,7 +329,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const SizedBox(height: 20),
 
-                    // Interactive Configuration Modules (Hidden entirely during active camera previews)
+                    // Interactive Configurations Tree (Hidden completely during previews)
                     if (!_showCamera) ...[
                       if (!_streaming)
                         Row(
@@ -401,7 +387,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const Spacer(),
 
-                    // Primary Interactive Control Hub
+                    // Primary Operational Control Hub (Hidden during fullscreen preview)
                     if (!_showCamera) ...[
                       SizedBox(
                         width: double.infinity,
@@ -434,20 +420,15 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       const SizedBox(height: 10),
                     ],
 
-                    // Unified Secondary Actions Bar Docked Nicely Below Main Operations Button
+                    // FIXED ACCESS HUB: Repositioned secondary row cleanly docked beneath tracking toggle
                     Row(
                       children: [
                         Expanded(
                           child: SizedBox(
                             height: 44,
                             child: OutlinedButton.icon(
-                              onPressed: () {
-                                setState(() {
-                                  _showCamera = !_showCamera;
-                                  // Reset node bindings flag on preview changes to enforce fresh layout builds
-                                  _nodeBound = false;
-                                });
-                              },
+                              onPressed: () =>
+                                  setState(() => _showCamera = !_showCamera),
                               icon: Icon(
                                   _showCamera
                                       ? Icons.dashboard
@@ -455,7 +436,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                   size: 16),
                               label: Text(
                                   _showCamera ? 'Hide Canvas' : 'Preview',
-                                  style: const TextStyle(fontSize: 13)),
+                                  style: const TextStyle(
+                                      fontSize: 13)), // Clean label
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: _showCamera
                                     ? const Color(0xFF00D4FF)
