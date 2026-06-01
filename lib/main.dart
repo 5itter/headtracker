@@ -142,9 +142,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
       }
     }
 
-    // POWER AND LAG ELIMINATION SHORT-CIRCUIT:
-    // When Display Off mode is running, execution contextual loops break instantly right here.
-    // Memory structures, logging matrices, and layout redraw actions freeze to save resource overhead.
     if (_screenBlackoutMode) return;
 
     // 3. PERFORMANCE LOGGING EVALUATION
@@ -207,6 +204,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
         _faceDetected = false;
         _packetsSent = 0;
         _screenBlackoutMode = false;
+        // Forces node binding flag to clear so next session initializes layout tracking cleanly
+        _nodeBound = false;
       });
       return;
     }
@@ -260,6 +259,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Evaluation check to ensure the camera is loaded ONLY when necessary
+    final bool cameraIsRequired = _streaming || _showCamera;
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: _screenBlackoutMode
           ? SystemUiOverlayStyle.light.copyWith(statusBarColor: Colors.black)
@@ -269,23 +271,37 @@ class _TrackerScreenState extends State<TrackerScreen> {
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            // FIXED MESH RETENTION ENGINE:
-            // Camera context is locked globally to ensure diagnostic blue node structures don't break
-            Positioned.fill(
-              child: ARKitSceneView(
-                configuration: ARKitConfiguration.faceTracking,
-                onARKitViewCreated: _onARKitViewCreated,
-                showStatistics: false,
-              ),
-            ),
+            // LIFECYCLE MANAGED ARKIT SESSION ENGINE:
+            // Camera context initializes from memory ONLY when streaming data or canvas previews are open.
+            if (cameraIsRequired)
+              _showCamera && !_screenBlackoutMode
+                  ? Positioned.fill(
+                      child: ARKitSceneView(
+                        configuration: ARKitConfiguration.faceTracking,
+                        onARKitViewCreated: _onARKitViewCreated,
+                        showStatistics: false,
+                      ),
+                    )
+                  : SizedBox(
+                      width: 1,
+                      height: 1,
+                      child: ARKitSceneView(
+                        configuration: ARKitConfiguration.faceTracking,
+                        onARKitViewCreated: _onARKitViewCreated,
+                        showStatistics: false,
+                      ),
+                    )
+            else
+              const SizedBox
+                  .shrink(), // Camera fully unloaded from device stack context when idle
 
-            // Solid background shield masks the raw video layers seamlessly when preview toggle is unchecked
+            // Opaque blocker panel covers background matrix operations during passive dashboard paths
             if (!_showCamera)
               Positioned.fill(
                 child: Container(color: const Color(0xFF0A0A0A)),
               ),
 
-            // Master Application Interface Layout Tree
+            // Master User Interface View Container
             SafeArea(
               child: Padding(
                 padding:
@@ -293,7 +309,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Persistent Global Header (Hidden entirely when inspecting clean camera view previews)
+                    // Clean Header Status Tracking Bar Row
                     if (!_showCamera)
                       Row(
                         children: [
@@ -327,7 +343,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const SizedBox(height: 20),
 
-                    // Setup Configuration Options (Hidden entirely during camera view checks)
+                    // Interactive Configuration Modules (Hidden entirely during active camera previews)
                     if (!_showCamera) ...[
                       if (!_streaming)
                         Row(
@@ -385,8 +401,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const Spacer(),
 
-                    // PRIMARY ACTIVATION ENGINE CONTROL BUTTON
-                    // Displays only during default setup view paths
+                    // Primary Interactive Control Hub
                     if (!_showCamera) ...[
                       SizedBox(
                         width: double.infinity,
@@ -419,15 +434,20 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       const SizedBox(height: 10),
                     ],
 
-                    // FIXED LAYOUT ANCHOR: Secondary Actions Panel docked beautifully at the bottom boundary
+                    // Unified Secondary Actions Bar Docked Nicely Below Main Operations Button
                     Row(
                       children: [
                         Expanded(
                           child: SizedBox(
                             height: 44,
                             child: OutlinedButton.icon(
-                              onPressed: () =>
-                                  setState(() => _showCamera = !_showCamera),
+                              onPressed: () {
+                                setState(() {
+                                  _showCamera = !_showCamera;
+                                  // Reset node bindings flag on preview changes to enforce fresh layout builds
+                                  _nodeBound = false;
+                                });
+                              },
                               icon: Icon(
                                   _showCamera
                                       ? Icons.dashboard
@@ -435,8 +455,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                   size: 16),
                               label: Text(
                                   _showCamera ? 'Hide Canvas' : 'Preview',
-                                  style: const TextStyle(
-                                      fontSize: 13)), // Updated string value
+                                  style: const TextStyle(fontSize: 13)),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: _showCamera
                                     ? const Color(0xFF00D4FF)
@@ -506,7 +525,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
               ),
             ),
 
-            // SYSTEM-LEVEL TOTAL DISPLAY BLACKOUT OVERLAY
+            // NATIVE ECLIPSE BLACKOUT OVERLAY
             if (_screenBlackoutMode)
               Positioned.fill(
                 child: GestureDetector(
