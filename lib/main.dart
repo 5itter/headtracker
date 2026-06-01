@@ -142,6 +142,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
       }
     }
 
+    // POWER AND LAG ELIMINATION SHORT-CIRCUIT:
+    // When Display Off mode is running, execution contextual loops break instantly right here.
+    // Memory structures, logging matrices, and layout redraw actions freeze to save resource overhead.
     if (_screenBlackoutMode) return;
 
     // 3. PERFORMANCE LOGGING EVALUATION
@@ -266,27 +269,23 @@ class _TrackerScreenState extends State<TrackerScreen> {
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            // Your exact persistent camera element setup
-            if (_showCamera && !_screenBlackoutMode)
+            // FIXED MESH RETENTION ENGINE:
+            // Camera context is locked globally to ensure diagnostic blue node structures don't break
+            Positioned.fill(
+              child: ARKitSceneView(
+                configuration: ARKitConfiguration.faceTracking,
+                onARKitViewCreated: _onARKitViewCreated,
+                showStatistics: false,
+              ),
+            ),
+
+            // Solid background shield masks the raw video layers seamlessly when preview toggle is unchecked
+            if (!_showCamera)
               Positioned.fill(
-                child: ARKitSceneView(
-                  configuration: ARKitConfiguration.faceTracking,
-                  onARKitViewCreated: _onARKitViewCreated,
-                  showStatistics: false,
-                ),
-              )
-            else
-              SizedBox(
-                width: 1,
-                height: 1,
-                child: ARKitSceneView(
-                  configuration: ARKitConfiguration.faceTracking,
-                  onARKitViewCreated: _onARKitViewCreated,
-                  showStatistics: false,
-                ),
+                child: Container(color: const Color(0xFF0A0A0A)),
               ),
 
-            // Main Core User Interface Container
+            // Master Application Interface Layout Tree
             SafeArea(
               child: Padding(
                 padding:
@@ -294,38 +293,41 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        const Text(
-                          'HeadTracker',
-                          style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white),
-                        ),
-                        const Spacer(),
-                        _StatusDot(
-                            streaming: _streaming, faceDetected: _faceDetected),
-                        const SizedBox(width: 8),
-                        Text(
-                          _streaming
-                              ? (_faceDetected
-                                  ? '$_fps FPS'
-                                  : (_isUsbMode ? 'Wired Idle' : 'No Face'))
-                              : 'Stopped',
-                          style: TextStyle(
-                              color: _streaming && _faceDetected
-                                  ? const Color(0xFF00D4FF)
-                                  : Colors.grey,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500),
-                        ),
-                      ],
-                    ),
+                    // Persistent Global Header (Hidden entirely when inspecting clean camera view previews)
+                    if (!_showCamera)
+                      Row(
+                        children: [
+                          const Text(
+                            'HeadTracker',
+                            style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white),
+                          ),
+                          const Spacer(),
+                          _StatusDot(
+                              streaming: _streaming,
+                              faceDetected: _faceDetected),
+                          const SizedBox(width: 8),
+                          Text(
+                            _streaming
+                                ? (_faceDetected
+                                    ? '$_fps FPS'
+                                    : (_isUsbMode ? 'Wired Idle' : 'No Face'))
+                                : 'Stopped',
+                            style: TextStyle(
+                                color: _streaming && _faceDetected
+                                    ? const Color(0xFF00D4FF)
+                                    : Colors.grey,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500),
+                          ),
+                        ],
+                      ),
 
                     const SizedBox(height: 20),
 
-                    // Interactive Configurations Dashboard Tree (Hides when viewing full camera preview)
+                    // Setup Configuration Options (Hidden entirely during camera view checks)
                     if (!_showCamera) ...[
                       if (!_streaming)
                         Row(
@@ -383,39 +385,41 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const Spacer(),
 
-                    // Primary Interactive Control Hub
-                    SizedBox(
-                      width: double.infinity,
-                      height: 52,
-                      child: ElevatedButton(
-                        onPressed: _toggleStreaming,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _streaming
-                              ? const Color(0xFF3A0000)
-                              : const Color(0xFF003A4A),
-                          foregroundColor: _streaming
-                              ? Colors.redAccent
-                              : const Color(0xFF00D4FF),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                            side: BorderSide(
-                                color: _streaming
-                                    ? Colors.redAccent
-                                    : const Color(0xFF00D4FF)),
+                    // PRIMARY ACTIVATION ENGINE CONTROL BUTTON
+                    // Displays only during default setup view paths
+                    if (!_showCamera) ...[
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: ElevatedButton(
+                          onPressed: _toggleStreaming,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _streaming
+                                ? const Color(0xFF3A0000)
+                                : const Color(0xFF003A4A),
+                            foregroundColor: _streaming
+                                ? Colors.redAccent
+                                : const Color(0xFF00D4FF),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              side: BorderSide(
+                                  color: _streaming
+                                      ? Colors.redAccent
+                                      : const Color(0xFF00D4FF)),
+                            ),
+                            elevation: 0,
                           ),
-                          elevation: 0,
-                        ),
-                        child: Text(
-                          _streaming ? 'Stop Tracking' : 'Start Tracking',
-                          style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w600),
+                          child: Text(
+                            _streaming ? 'Stop Tracking' : 'Start Tracking',
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w600),
+                          ),
                         ),
                       ),
-                    ),
+                      const SizedBox(height: 10),
+                    ],
 
-                    const SizedBox(height: 10),
-
-                    // FIXED: Action buttons placed cleanly directly under the main tracking toggle
+                    // FIXED LAYOUT ANCHOR: Secondary Actions Panel docked beautifully at the bottom boundary
                     Row(
                       children: [
                         Expanded(
@@ -432,8 +436,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               label: Text(
                                   _showCamera ? 'Hide Canvas' : 'Preview',
                                   style: const TextStyle(
-                                      fontSize:
-                                          13)), // FIXED: Label string updated to Preview
+                                      fontSize: 13)), // Updated string value
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: _showCamera
                                     ? const Color(0xFF00D4FF)
@@ -456,11 +459,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               child: OutlinedButton.icon(
                                 onPressed: () {
                                   setState(() => _screenBlackoutMode = true);
-                                  // Hides battery bar and status items completely
                                   SystemChrome.setEnabledSystemUIMode(
                                       SystemUiMode.manual,
                                       overlays: []);
-                                  // Native Channel communication to drop physical screen backlight brightness to 0
                                   const MethodChannel(
                                           'com.headtracker.app/native')
                                       .invokeMethod(
@@ -505,7 +506,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
               ),
             ),
 
-            // NATIVE ECLIPSE BLACKOUT OVERLAY
+            // SYSTEM-LEVEL TOTAL DISPLAY BLACKOUT OVERLAY
             if (_screenBlackoutMode)
               Positioned.fill(
                 child: GestureDetector(
@@ -514,7 +515,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     setState(() => _screenBlackoutMode = false);
                     SystemChrome.setEnabledSystemUIMode(
                         SystemUiMode.edgeToEdge);
-                    // Restores display brightness levels safely
                     const MethodChannel('com.headtracker.app/native')
                         .invokeMethod('toggleProximity', {'enable': false});
                   },
