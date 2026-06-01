@@ -269,7 +269,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            // FIXED RESENTION MATRIX: Viewport structure remains identical to protect blue anchors
+            // FIXED VIEW RETENTION MATRIX: Viewport structure remains a permanent Positioned.fill.
+            // This stops Flutter from re-initializing the underlying native camera view channel.
             if (cameraIsRequired)
               Positioned.fill(
                 child: ARKitSceneView(
@@ -287,7 +288,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Container(color: const Color(0xFF0A0A0A)),
               ),
 
-            // Main Core User Interface Container
+            // Master User Interface View Container
             SafeArea(
               child: Padding(
                 padding:
@@ -329,7 +330,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const SizedBox(height: 20),
 
-                    // Interactive Configurations Tree (Hidden completely during previews)
+                    // Interactive Configuration Modules (Hidden entirely during active camera previews)
                     if (!_showCamera) ...[
                       if (!_streaming)
                         Row(
@@ -387,7 +388,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const Spacer(),
 
-                    // Primary Operational Control Hub (Hidden during fullscreen preview)
+                    // Primary Operational Control Hub
                     if (!_showCamera) ...[
                       SizedBox(
                         width: double.infinity,
@@ -420,7 +421,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       const SizedBox(height: 10),
                     ],
 
-                    // FIXED ACCESS HUB: Repositioned secondary row cleanly docked beneath tracking toggle
+                    // Secondary Actions Bar (Docked directly beneath tracking toggle)
                     Row(
                       children: [
                         Expanded(
@@ -436,8 +437,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                   size: 16),
                               label: Text(
                                   _showCamera ? 'Hide Canvas' : 'Preview',
-                                  style: const TextStyle(
-                                      fontSize: 13)), // Clean label
+                                  style: const TextStyle(fontSize: 13)),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: _showCamera
                                     ? const Color(0xFF00D4FF)
