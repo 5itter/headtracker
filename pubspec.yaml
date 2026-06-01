@@ -9,6 +9,7 @@ dependencies:
   flutter:
     sdk: flutter
   arkit_plugin: ^1.0.4
+  shared_preferences: ^2.2.0 # Add this line here
 
 dev_dependencies:
   flutter_test:

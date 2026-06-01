@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:arkit_plugin/arkit_plugin.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() => runApp(const HeadTrackerApp());
 
@@ -35,9 +36,6 @@ class TrackerScreen extends StatefulWidget {
 }
 
 class _TrackerScreenState extends State<TrackerScreen> {
-  // Native Platform Gateways for Hardware Screen Control
-  static const _platformChannel = MethodChannel('com.headtracker.app/native');
-
   ARKitController? _arkitController;
   RawDatagramSocket? _udpSocket;
   ServerSocket? _tcpServer;
@@ -50,10 +48,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
   bool _faceDetected = false;
   bool _showCamera = false;
   bool _nodeBound = false;
-
-  // Interface Configuration States
-  bool _isUsbMode = false; // Toggles between Wi-Fi (UDP) and USB (TCP Server)
-  bool _proximityActive = false; // Manages proximity monitoring state
+  bool _screenBlackoutMode = false;
+  bool _isUsbMode =
+      false; // FIXED: Re-added the missing communication mode toggle variable
 
   static const _faceMeshNodeName = 'face_mesh';
 
@@ -77,17 +74,26 @@ class _TrackerScreenState extends State<TrackerScreen> {
   void initState() {
     super.initState();
     _packetUint8ListView = _packetBuffer.buffer.asUint8List();
+    _loadSavedSettings();
   }
 
-  // Invokes native hardware proximity calls to cut display backlight power safely
-  Future<void> _setProximitySensor(bool enable) async {
-    try {
-      await _platformChannel
-          .invokeMethod('toggleProximity', {'enable': enable});
-      setState(() => _proximityActive = enable);
-    } catch (e) {
-      // Gracefully handles overrides if working inside virtualization emulators
+  Future<void> _loadSavedSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedIp = prefs.getString('saved_ip');
+    final savedPort = prefs.getString('saved_port');
+
+    if (savedIp != null && savedIp.isNotEmpty) {
+      _ipController.text = savedIp;
     }
+    if (savedPort != null && savedPort.isNotEmpty) {
+      _portController.text = savedPort;
+    }
+  }
+
+  Future<void> _saveSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('saved_ip', _ipController.text.trim());
+    await prefs.setString('saved_port', _portController.text.trim());
   }
 
   void _onARKitViewCreated(ARKitController controller) {
@@ -125,13 +131,11 @@ class _TrackerScreenState extends State<TrackerScreen> {
       _packetBuffer.setFloat64(40, roll, Endian.little);
 
       if (_isUsbMode) {
-        // High-Speed Cable Pipeline (TCP Stream)
         if (_tcpClientSocket != null) {
           _tcpClientSocket!.add(_packetUint8ListView);
           _packetsSent++;
         }
       } else {
-        // Standard Wireless Pipeline (UDP Packet)
         if (_udpSocket != null && _targetAddress != null) {
           _udpSocket!.send(_packetUint8ListView, _targetAddress!, _targetPort);
           _packetsSent++;
@@ -139,9 +143,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
       }
     }
 
-    // HARDWARE SCREEN-OFF PIPELINE BYPASS:
-    // If proximity tracking cuts the screen, bypass UI execution contexts instantly.
-    if (_proximityActive) return;
+    if (_screenBlackoutMode) return;
 
     // 3. PERFORMANCE LOGGING EVALUATION
     _frameCount++;
@@ -200,13 +202,11 @@ class _TrackerScreenState extends State<TrackerScreen> {
       _tcpServer?.close();
       _tcpServer = null;
 
-      _setProximitySensor(
-          false); // Restore native hardware screen states safely
-
       setState(() {
         _streaming = false;
         _faceDetected = false;
         _packetsSent = 0;
+        _screenBlackoutMode = false;
       });
       return;
     }
@@ -217,8 +217,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
       return;
     }
 
+    await _saveSettings();
+
     if (_isUsbMode) {
-      // Initialize USB Communication Interface Layer (TCP Server Architecture)
       try {
         _targetPort = port;
         _tcpServer = await ServerSocket.bind(InternetAddress.anyIPv4, port);
@@ -226,7 +227,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
         _tcpServer!.listen((Socket client) {
           _tcpClientSocket = client;
-          // OPTIMIZATION: Kill Nagle's algorithm to transmit telemetry updates immediately
           _tcpClientSocket!.setOption(SocketOption.tcpNoDelay, true);
           setState(() => _faceDetected = true);
         }, onError: (err) {
@@ -236,7 +236,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
         _showError('Failed to initialize USB Server: $e');
       }
     } else {
-      // Initialize Wireless Communication Interface Layer (UDP Architecture)
       final ip = _ipController.text.trim();
       if (ip.isEmpty) {
         _showError('Enter a valid target IP address');
@@ -261,6 +260,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final io = MediaQuery.of(context);
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light.copyWith(
         statusBarColor: Colors.transparent,
@@ -269,8 +269,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            // Structural Capture Elements
-            if (_showCamera)
+            if (_showCamera && !_screenBlackoutMode)
               Positioned.fill(
                 child: ARKitSceneView(
                   configuration: ARKitConfiguration.faceTracking,
@@ -288,30 +287,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                   showStatistics: false,
                 ),
               ),
-
-            if (_showCamera)
-              Positioned.fill(
-                child: Container(
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Colors.transparent, Color(0xEE000000)],
-                      stops: [0.4, 0.68],
-                    ),
-                  ),
-                ),
-              ),
-
-            if (!_showCamera)
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                height: MediaQuery.of(context).padding.top + 60,
-                child: Container(color: const Color(0xFF0A0A0A)),
-              ),
-
             SafeArea(
               child: Padding(
                 padding:
@@ -329,45 +304,31 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               color: Colors.white),
                         ),
                         const Spacer(),
-
-                        // Hardware Proximity Auto-Screen-Off Controller Option
-                        if (_streaming)
+                        if (_streaming && !_showCamera)
                           GestureDetector(
-                            onTap: () => _setProximitySensor(!_proximityActive),
+                            onTap: () =>
+                                setState(() => _screenBlackoutMode = true),
                             child: Container(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 10, vertical: 6),
                               decoration: BoxDecoration(
-                                color: _proximityActive
-                                    ? const Color(0xFF003A4A)
-                                    : const Color(0xFF1A1A1A),
+                                color: const Color(0xFF1A1A1A),
                                 borderRadius: BorderRadius.circular(8),
                                 border: Border.all(
-                                    color: _proximityActive
-                                        ? const Color(0xFF00D4FF)
-                                        : Colors.grey.withOpacity(0.2)),
+                                    color: Colors.grey.withValues(alpha: 0.2)),
                               ),
-                              child: Row(children: [
+                              child: const Row(children: [
                                 Icon(Icons.power_settings_new,
-                                    size: 16,
-                                    color: _proximityActive
-                                        ? const Color(0xFF00D4FF)
-                                        : Colors.grey),
-                                const SizedBox(width: 4),
-                                Text(
-                                    _proximityActive
-                                        ? 'Sensor Lock ON'
-                                        : 'Proximity Lock',
+                                    size: 16, color: Colors.grey),
+                                SizedBox(width: 4),
+                                Text('Display Off',
                                     style: TextStyle(
-                                        color: _proximityActive
-                                            ? const Color(0xFF00D4FF)
-                                            : Colors.grey,
-                                        fontSize: 12)),
+                                        color: Colors.grey, fontSize: 12)),
                               ]),
                             ),
                           ),
-                        const SizedBox(width: 8),
-
+                        if (_streaming && !_showCamera)
+                          const SizedBox(width: 8),
                         GestureDetector(
                           onTap: () {
                             if (_showCamera) {
@@ -387,7 +348,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               border: Border.all(
                                   color: _showCamera
                                       ? const Color(0xFF00D4FF)
-                                      : Colors.grey.withOpacity(0.3)),
+                                      : Colors.grey.withValues(
+                                          alpha:
+                                              0.3)), // FIXED: withOpacity warning
                             ),
                             child: Row(children: [
                               Icon(
@@ -399,7 +362,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                       ? const Color(0xFF00D4FF)
                                       : Colors.grey),
                               const SizedBox(width: 4),
-                              Text(_showCamera ? 'Hide' : 'Preview',
+                              Text(_showCamera ? 'Hide Canvas' : 'Preview',
                                   style: TextStyle(
                                       color: _showCamera
                                           ? const Color(0xFF00D4FF)
@@ -425,38 +388,33 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         ),
                       ],
                     ),
-
                     const SizedBox(height: 20),
-
-                    // PROTOCOL MATRIX SELECTOR FIELD BUTTONS
-                    if (!_streaming)
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ChoiceChip(
-                              label: const Center(
-                                  child: Text('Wi-Fi (Network UDP)')),
-                              selected: !_isUsbMode,
-                              onSelected: (val) =>
-                                  setState(() => _isUsbMode = false),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: ChoiceChip(
-                              label:
-                                  const Center(child: Text('USB (Wired TCP)')),
-                              selected: _isUsbMode,
-                              onSelected: (val) =>
-                                  setState(() => _isUsbMode = true),
-                            ),
-                          ),
-                        ],
-                      ),
-
-                    const SizedBox(height: 20),
-
                     if (!_showCamera) ...[
+                      if (!_streaming)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ChoiceChip(
+                                label: const Center(
+                                    child: Text('Wi-Fi (Network UDP)')),
+                                selected: !_isUsbMode,
+                                onSelected: (val) =>
+                                    setState(() => _isUsbMode = false),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: ChoiceChip(
+                                label: const Center(
+                                    child: Text('USB (Wired TCP)')),
+                                selected: _isUsbMode,
+                                onSelected: (val) =>
+                                    setState(() => _isUsbMode = true),
+                              ),
+                            ),
+                          ],
+                        ),
+                      const SizedBox(height: 20),
                       const Text('LIVE POSE',
                           style: TextStyle(
                               color: Colors.grey,
@@ -472,26 +430,22 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         'Z': _z
                       }),
                       const SizedBox(height: 24),
-                    ],
-
-                    // Input Form Controllers (Conditionally hide the IP form field under wired configurations)
-                    if (!_isUsbMode) ...[
+                      if (!_isUsbMode) ...[
+                        _InputField(
+                            controller: _ipController,
+                            label: 'PC IP Address',
+                            hint: '192.168.1.100',
+                            enabled: !_streaming),
+                        const SizedBox(height: 12),
+                      ],
                       _InputField(
-                          controller: _ipController,
-                          label: 'PC IP Address',
-                          hint: '192.168.1.100',
-                          enabled: !_streaming),
-                      const SizedBox(height: 12),
+                          controller: _portController,
+                          label: 'Port Mapping Node',
+                          hint: '4242',
+                          enabled: !_streaming,
+                          keyboardType: TextInputType.number),
                     ],
-                    _InputField(
-                        controller: _portController,
-                        label: 'Port Mapping Node',
-                        hint: '4242',
-                        enabled: !_streaming,
-                        keyboardType: TextInputType.number),
-
                     const Spacer(),
-
                     SizedBox(
                       width: double.infinity,
                       height: 52,
@@ -514,18 +468,13 @@ class _TrackerScreenState extends State<TrackerScreen> {
                           elevation: 0,
                         ),
                         child: Text(
-                          _streaming
-                              ? 'Stop Tracking Engine'
-                              : (_isUsbMode
-                                  ? 'Bind Wired USB Engine'
-                                  : 'Initialize Wireless Engine'),
+                          _streaming ? 'Stop Tracking' : 'Start Tracking',
                           style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w600),
                         ),
                       ),
                     ),
                     const SizedBox(height: 12),
-
                     Center(
                       child: Text(
                         'Packets sent: $_packetsSent',
@@ -540,17 +489,12 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     const SizedBox(height: 8),
                     Center(
                       child: Text(
-                        _proximityActive
-                            ? 'PROXIMITY LOCK ACTIVE: Cover sensor to cut display power completely'
-                            : (_showCamera
-                                ? 'Face mesh shows tracking coverage'
-                                : 'Uses front TrueDepth camera module natively.'),
+                        _showCamera
+                            ? 'Face tracking canvas active'
+                            : 'Uses front TrueDepth camera module natively.',
                         textAlign: TextAlign.center,
-                        style: TextStyle(
-                            color: _proximityActive
-                                ? Colors.orangeAccent
-                                : Colors.grey,
-                            fontSize: 12),
+                        style:
+                            const TextStyle(color: Colors.grey, fontSize: 12),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -558,6 +502,29 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 ),
               ),
             ),
+            if (_screenBlackoutMode)
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onDoubleTap: () =>
+                      setState(() => _screenBlackoutMode = false),
+                  child: Container(
+                    color: Colors.black,
+                    child: const Center(
+                      child: Text(
+                        'DISPLAY BLACKOUT ACTIVE\n\nTracking stream is fully operational\nDouble-tap anywhere to wake screen',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Color(0x22FFFFFF),
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                          height: 1.6,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -574,7 +541,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
   }
 }
 
-// Keep original structures for rendering modules below...
 class _StatusDot extends StatelessWidget {
   final bool streaming;
   final bool faceDetected;
