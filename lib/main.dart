@@ -49,8 +49,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   bool _showCamera = false;
   bool _nodeBound = false;
   bool _screenBlackoutMode = false;
-  bool _isUsbMode =
-      false; // FIXED: Re-added the missing communication mode toggle variable
+  bool _isUsbMode = false;
 
   static const _faceMeshNodeName = 'face_mesh';
 
@@ -155,9 +154,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
     }
 
     // 4. LOW-OVERHEAD GEOMETRY SYNCHRONIZATION
-    if (_showCamera) {
-      _updateFaceMesh(anchor);
-    }
+    _updateFaceMesh(anchor);
 
     // 5. VISUAL LAYOUT ENGINE THROTTLE
     final bool shouldUpdateUiLayout =
@@ -260,33 +257,31 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final io = MediaQuery.of(context);
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light.copyWith(
-        statusBarColor: Colors.transparent,
-      ),
+      value: _screenBlackoutMode
+          ? SystemUiOverlayStyle.light.copyWith(statusBarColor: Colors.black)
+          : SystemUiOverlayStyle.light
+              .copyWith(statusBarColor: Colors.transparent),
       child: Scaffold(
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            if (_showCamera && !_screenBlackoutMode)
-              Positioned.fill(
-                child: ARKitSceneView(
-                  configuration: ARKitConfiguration.faceTracking,
-                  onARKitViewCreated: _onARKitViewCreated,
-                  showStatistics: false,
-                ),
-              )
-            else
-              SizedBox(
-                width: 1,
-                height: 1,
-                child: ARKitSceneView(
-                  configuration: ARKitConfiguration.faceTracking,
-                  onARKitViewCreated: _onARKitViewCreated,
-                  showStatistics: false,
-                ),
+            // Master Tracking Camera view runs constantly in the background loop
+            Positioned.fill(
+              child: ARKitSceneView(
+                configuration: ARKitConfiguration.faceTracking,
+                onARKitViewCreated: _onARKitViewCreated,
+                showStatistics: false,
               ),
+            ),
+
+            // Solid dark blocker panel layer that hides camera view when canvas preview is off
+            if (!_showCamera)
+              Positioned.fill(
+                child: Container(color: const Color(0xFF0A0A0A)),
+              ),
+
+            // Main Core User Interface Container
             SafeArea(
               child: Padding(
                 padding:
@@ -294,6 +289,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Adaptive, Non-Breaking Responsive Header Row
                     Row(
                       children: [
                         const Text(
@@ -303,92 +299,114 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               fontWeight: FontWeight.bold,
                               color: Colors.white),
                         ),
-                        const Spacer(),
-                        if (_streaming && !_showCamera)
-                          GestureDetector(
-                            onTap: () =>
-                                setState(() => _screenBlackoutMode = true),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF1A1A1A),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                    color: Colors.grey.withValues(alpha: 0.2)),
-                              ),
-                              child: const Row(children: [
-                                Icon(Icons.power_settings_new,
-                                    size: 16, color: Colors.grey),
-                                SizedBox(width: 4),
-                                Text('Display Off',
-                                    style: TextStyle(
-                                        color: Colors.grey, fontSize: 12)),
-                              ]),
-                            ),
-                          ),
-                        if (_streaming && !_showCamera)
-                          const SizedBox(width: 8),
-                        GestureDetector(
-                          onTap: () {
-                            if (_showCamera) {
-                              _arkitController?.remove(_faceMeshNodeName);
-                              _nodeBound = false;
-                            }
-                            setState(() => _showCamera = !_showCamera);
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: _showCamera
-                                  ? const Color(0xFF003A4A)
-                                  : const Color(0xFF1A1A1A),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                  color: _showCamera
-                                      ? const Color(0xFF00D4FF)
-                                      : Colors.grey.withValues(
-                                          alpha:
-                                              0.3)), // FIXED: withOpacity warning
-                            ),
-                            child: Row(children: [
-                              Icon(
-                                  _showCamera
-                                      ? Icons.videocam
-                                      : Icons.videocam_off,
-                                  size: 16,
-                                  color: _showCamera
-                                      ? const Color(0xFF00D4FF)
-                                      : Colors.grey),
-                              const SizedBox(width: 4),
-                              Text(_showCamera ? 'Hide Canvas' : 'Preview',
-                                  style: TextStyle(
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            reverse: true,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                if (_streaming && !_showCamera) ...[
+                                  GestureDetector(
+                                    onTap: () {
+                                      setState(
+                                          () => _screenBlackoutMode = true);
+                                      SystemChrome.setEnabledSystemUIMode(
+                                          SystemUiMode.manual,
+                                          overlays: []);
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 10, vertical: 6),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF1A1A1A),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                            color: Colors.grey
+                                                .withValues(alpha: 0.2)),
+                                      ),
+                                      child: const Row(children: [
+                                        Icon(Icons.power_settings_new,
+                                            size: 14, color: Colors.grey),
+                                        SizedBox(width: 4),
+                                        Text('Display Off',
+                                            style: TextStyle(
+                                                color: Colors.grey,
+                                                fontSize: 11)),
+                                      ]),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                ],
+                                GestureDetector(
+                                  onTap: () => setState(
+                                      () => _showCamera = !_showCamera),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 6),
+                                    decoration: BoxDecoration(
                                       color: _showCamera
+                                          ? const Color(0xFF003A4A)
+                                          : const Color(0xFF1A1A1A),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                          color: _showCamera
+                                              ? const Color(0xFF00D4FF)
+                                              : Colors.grey
+                                                  .withValues(alpha: 0.3)),
+                                    ),
+                                    child: Row(children: [
+                                      Icon(
+                                          _showCamera
+                                              ? Icons.videocam
+                                              : Icons.videocam_off,
+                                          size: 14,
+                                          color: _showCamera
+                                              ? const Color(0xFF00D4FF)
+                                              : Colors.grey),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                          _showCamera
+                                              ? 'Hide Canvas'
+                                              : 'Preview',
+                                          style: TextStyle(
+                                              color: _showCamera
+                                                  ? const Color(0xFF00D4FF)
+                                                  : Colors.grey,
+                                              fontSize: 11)),
+                                    ]),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                _StatusDot(
+                                    streaming: _streaming,
+                                    faceDetected: _faceDetected),
+                                const SizedBox(width: 6),
+                                Text(
+                                  _streaming
+                                      ? (_faceDetected
+                                          ? '$_fps fps'
+                                          : (_isUsbMode
+                                              ? 'Wired Idle'
+                                              : 'No face'))
+                                      : 'Stopped',
+                                  style: TextStyle(
+                                      color: _streaming && _faceDetected
                                           ? const Color(0xFF00D4FF)
                                           : Colors.grey,
-                                      fontSize: 12)),
-                            ]),
+                                      fontSize: 12),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        _StatusDot(
-                            streaming: _streaming, faceDetected: _faceDetected),
-                        const SizedBox(width: 6),
-                        Text(
-                          _streaming
-                              ? (_faceDetected
-                                  ? '$_fps fps'
-                                  : (_isUsbMode ? 'Wired Idle' : 'No face'))
-                              : 'Stopped',
-                          style: TextStyle(
-                              color: _streaming && _faceDetected
-                                  ? const Color(0xFF00D4FF)
-                                  : Colors.grey),
                         ),
                       ],
                     ),
+
                     const SizedBox(height: 20),
+
+                    // Menu Elements panel (Automatically fades completely off-screen during Canvas Previews)
                     if (!_showCamera) ...[
                       if (!_streaming)
                         Row(
@@ -396,7 +414,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
                             Expanded(
                               child: ChoiceChip(
                                 label: const Center(
-                                    child: Text('Wi-Fi (Network UDP)')),
+                                    child: Text(
+                                        'Wi-Fi')), // Simplified label string
                                 selected: !_isUsbMode,
                                 onSelected: (val) =>
                                     setState(() => _isUsbMode = false),
@@ -406,7 +425,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
                             Expanded(
                               child: ChoiceChip(
                                 label: const Center(
-                                    child: Text('USB (Wired TCP)')),
+                                    child:
+                                        Text('USB')), // Simplified label string
                                 selected: _isUsbMode,
                                 onSelected: (val) =>
                                     setState(() => _isUsbMode = true),
@@ -445,48 +465,54 @@ class _TrackerScreenState extends State<TrackerScreen> {
                           enabled: !_streaming,
                           keyboardType: TextInputType.number),
                     ],
+
                     const Spacer(),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 52,
-                      child: ElevatedButton(
-                        onPressed: _toggleStreaming,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _streaming
-                              ? const Color(0xFF3A0000)
-                              : const Color(0xFF003A4A),
-                          foregroundColor: _streaming
-                              ? Colors.redAccent
-                              : const Color(0xFF00D4FF),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                            side: BorderSide(
-                                color: _streaming
-                                    ? Colors.redAccent
-                                    : const Color(0xFF00D4FF)),
+
+                    // Action Activation Button Panel
+                    if (!_showCamera) ...[
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: ElevatedButton(
+                          onPressed: _toggleStreaming,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _streaming
+                                ? const Color(0xFF3A0000)
+                                : const Color(0xFF003A4A),
+                            foregroundColor: _streaming
+                                ? Colors.redAccent
+                                : const Color(0xFF00D4FF),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              side: BorderSide(
+                                  color: _streaming
+                                      ? Colors.redAccent
+                                      : const Color(0xFF00D4FF)),
+                            ),
+                            elevation: 0,
                           ),
-                          elevation: 0,
+                          child: Text(
+                            _streaming ? 'Stop Tracking' : 'Start Tracking',
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w600),
+                          ),
                         ),
+                      ),
+                      const SizedBox(height: 12),
+                      Center(
                         child: Text(
-                          _streaming ? 'Stop Tracking' : 'Start Tracking',
-                          style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w600),
+                          'Packets sent: $_packetsSent',
+                          style: TextStyle(
+                              color: _packetsSent > 0
+                                  ? const Color(0xFF00D4FF)
+                                  : Colors.grey,
+                              fontSize: 13,
+                              fontFamily: 'monospace'),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    Center(
-                      child: Text(
-                        'Packets sent: $_packetsSent',
-                        style: TextStyle(
-                            color: _packetsSent > 0
-                                ? const Color(0xFF00D4FF)
-                                : Colors.grey,
-                            fontSize: 13,
-                            fontFamily: 'monospace'),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
+                      const SizedBox(height: 8),
+                    ],
+
                     Center(
                       child: Text(
                         _showCamera
@@ -502,26 +528,20 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 ),
               ),
             ),
+
+            // SYSTEM-LEVEL TOTAL DISPLAY BLACKOUT ENGINE
             if (_screenBlackoutMode)
               Positioned.fill(
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onDoubleTap: () =>
-                      setState(() => _screenBlackoutMode = false),
+                  onDoubleTap: () {
+                    setState(() => _screenBlackoutMode = false);
+                    SystemChrome.setEnabledSystemUIMode(SystemUiMode
+                        .edgeToEdge); // Restores native system overlays safely
+                  },
                   child: Container(
-                    color: Colors.black,
-                    child: const Center(
-                      child: Text(
-                        'DISPLAY BLACKOUT ACTIVE\n\nTracking stream is fully operational\nDouble-tap anywhere to wake screen',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Color(0x22FFFFFF),
-                          fontSize: 12,
-                          fontFamily: 'monospace',
-                          height: 1.6,
-                        ),
-                      ),
-                    ),
+                    color: Colors
+                        .black, // Darkens entire viewport surface on physical hardware lenses
                   ),
                 ),
               ),
