@@ -17,9 +17,9 @@ import Flutter
                 if let args = call.arguments as? [String: Any],
                    let enable = args["enable"] as? Bool {
                     
-                    // Native Hardware Power Overwrite Routine
                     DispatchQueue.main.async {
-                        UIDevice.current.isProximityMonitoringEnabled = enable
+                        // Drops screen brightness to absolute zero when display off is tapped, masking the green indicator
+                        UIScreen.main.brightness = enable ? 0.0 : 0.5
                     }
                     result(true)
                 } else {

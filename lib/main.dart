@@ -266,22 +266,27 @@ class _TrackerScreenState extends State<TrackerScreen> {
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            // Master Camera Frame (Stays mounted continuously to retain blue node assets)
-            Positioned.fill(
-              child: ARKitSceneView(
-                configuration: ARKitConfiguration.faceTracking,
-                onARKitViewCreated: _onARKitViewCreated,
-                showStatistics: false,
-              ),
-            ),
-
-            // Opaque dark background shield used to hide raw camera frames during menu paths
-            if (!_showCamera)
+            // Your exact persistent camera element setup
+            if (_showCamera && !_screenBlackoutMode)
               Positioned.fill(
-                child: Container(color: const Color(0xFF0A0A0A)),
+                child: ARKitSceneView(
+                  configuration: ARKitConfiguration.faceTracking,
+                  onARKitViewCreated: _onARKitViewCreated,
+                  showStatistics: false,
+                ),
+              )
+            else
+              SizedBox(
+                width: 1,
+                height: 1,
+                child: ARKitSceneView(
+                  configuration: ARKitConfiguration.faceTracking,
+                  onARKitViewCreated: _onARKitViewCreated,
+                  showStatistics: false,
+                ),
               ),
 
-            // Interface Control Layer
+            // Main Core User Interface Container
             SafeArea(
               child: Padding(
                 padding:
@@ -289,7 +294,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Clean Header Status Bar Row
                     Row(
                       children: [
                         const Text(
@@ -321,7 +325,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const SizedBox(height: 20),
 
-                    // Interactive Configurations Dashboard Tree (Hides when viewing full camera)
+                    // Interactive Configurations Dashboard Tree (Hides when viewing full camera preview)
                     if (!_showCamera) ...[
                       if (!_streaming)
                         Row(
@@ -411,10 +415,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
                     const SizedBox(height: 10),
 
-                    // Secondary Action Controls Row (Positioned beautifully directly underneath the main button)
+                    // FIXED: Action buttons placed cleanly directly under the main tracking toggle
                     Row(
                       children: [
-                        // Preview / Back button
                         Expanded(
                           child: SizedBox(
                             height: 44,
@@ -427,10 +430,10 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                       : Icons.videocam,
                                   size: 16),
                               label: Text(
-                                  _showCamera
-                                      ? 'Hide Canvas'
-                                      : 'Preview Canvas',
-                                  style: const TextStyle(fontSize: 13)),
+                                  _showCamera ? 'Hide Canvas' : 'Preview',
+                                  style: const TextStyle(
+                                      fontSize:
+                                          13)), // FIXED: Label string updated to Preview
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: _showCamera
                                     ? const Color(0xFF00D4FF)
@@ -445,8 +448,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                             ),
                           ),
                         ),
-
-                        // Render Display Off button only when streaming is active and camera view is hidden
                         if (_streaming && !_showCamera) ...[
                           const SizedBox(width: 10),
                           Expanded(
@@ -455,9 +456,15 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               child: OutlinedButton.icon(
                                 onPressed: () {
                                   setState(() => _screenBlackoutMode = true);
+                                  // Hides battery bar and status items completely
                                   SystemChrome.setEnabledSystemUIMode(
                                       SystemUiMode.manual,
                                       overlays: []);
+                                  // Native Channel communication to drop physical screen backlight brightness to 0
+                                  const MethodChannel(
+                                          'com.headtracker.app/native')
+                                      .invokeMethod(
+                                          'toggleProximity', {'enable': true});
                                 },
                                 icon: const Icon(Icons.power_settings_new,
                                     size: 16),
@@ -507,6 +514,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     setState(() => _screenBlackoutMode = false);
                     SystemChrome.setEnabledSystemUIMode(
                         SystemUiMode.edgeToEdge);
+                    // Restores display brightness levels safely
+                    const MethodChannel('com.headtracker.app/native')
+                        .invokeMethod('toggleProximity', {'enable': false});
                   },
                   child: Container(
                     color: Colors.black,
