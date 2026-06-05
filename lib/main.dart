@@ -131,8 +131,16 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
       if (_isUsbMode) {
         if (_tcpClientSocket != null) {
-          _tcpClientSocket!.add(_packetUint8ListView);
-          _packetsSent++;
+          try {
+            _tcpClientSocket!.add(_packetUint8ListView);
+            _tcpClientSocket!
+                .flush(); // Forces raw binary chunk frames down the wire instantly
+            _packetsSent++;
+          } catch (e) {
+            _tcpClientSocket?.close();
+            _tcpClientSocket = null;
+            _faceDetected = false;
+          }
         }
       } else {
         if (_udpSocket != null && _targetAddress != null) {
@@ -224,9 +232,25 @@ class _TrackerScreenState extends State<TrackerScreen> {
         setState(() => _streaming = true);
 
         _tcpServer!.listen((Socket client) {
+          _tcpClientSocket?.close(); // Clear any zombie stream clients cleanly
           _tcpClientSocket = client;
           _tcpClientSocket!.setOption(SocketOption.tcpNoDelay, true);
           setState(() => _faceDetected = true);
+
+          client.listen(
+            (data) {},
+            onError: (err) {
+              _tcpClientSocket?.close();
+              _tcpClientSocket = null;
+              setState(() => _faceDetected = false);
+            },
+            onDone: () {
+              _tcpClientSocket?.close();
+              _tcpClientSocket = null;
+              setState(() => _faceDetected = false);
+            },
+            cancelOnError: true,
+          );
         }, onError: (err) {
           _showError('USB Stream Error: $err');
         });
@@ -269,8 +293,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
         backgroundColor: const Color(0xFF0A0A0A),
         body: Stack(
           children: [
-            // FIXED VIEW RETENTION MATRIX: Viewport structure remains a permanent Positioned.fill.
-            // This stops Flutter from re-initializing the underlying native camera view channel.
             if (cameraIsRequired)
               Positioned.fill(
                 child: ARKitSceneView(
@@ -281,14 +303,10 @@ class _TrackerScreenState extends State<TrackerScreen> {
               )
             else
               const SizedBox.shrink(),
-
-            // Mask layer blocks tracking feed artifacts completely during dashboard paths
             if (!_showCamera)
               Positioned.fill(
                 child: Container(color: const Color(0xFF0A0A0A)),
               ),
-
-            // Master User Interface View Container
             SafeArea(
               child: Padding(
                 padding:
@@ -296,7 +314,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Clean Header Row (Hidden completely during canvas views)
                     if (!_showCamera)
                       Row(
                         children: [
@@ -327,10 +344,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                           ),
                         ],
                       ),
-
                     const SizedBox(height: 20),
-
-                    // Interactive Configuration Modules (Hidden entirely during active camera previews)
                     if (!_showCamera) ...[
                       if (!_streaming)
                         Row(
@@ -385,10 +399,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                           enabled: !_streaming,
                           keyboardType: TextInputType.number),
                     ],
-
                     const Spacer(),
-
-                    // Primary Operational Control Hub
                     if (!_showCamera) ...[
                       SizedBox(
                         width: double.infinity,
@@ -420,8 +431,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       ),
                       const SizedBox(height: 10),
                     ],
-
-                    // Secondary Actions Bar (Docked directly beneath tracking toggle)
                     Row(
                       children: [
                         Expanded(
@@ -486,7 +495,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         ],
                       ],
                     ),
-
                     if (!_showCamera) ...[
                       const SizedBox(height: 14),
                       Center(
@@ -506,8 +514,6 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 ),
               ),
             ),
-
-            // NATIVE ECLIPSE BLACKOUT OVERLAY
             if (_screenBlackoutMode)
               Positioned.fill(
                 child: GestureDetector(
