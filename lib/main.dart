@@ -50,6 +50,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   bool _nodeBound = false;
   bool _screenBlackoutMode = false;
   bool _isUsbMode = false;
+  bool _is60fpsMode = true;
 
   static const _faceMeshNodeName = 'face_mesh';
 
@@ -80,6 +81,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
     final prefs = await SharedPreferences.getInstance();
     final savedIp = prefs.getString('saved_ip');
     final savedPort = prefs.getString('saved_port');
+    final saved60fps = prefs.getBool('saved_60fps');
 
     if (savedIp != null && savedIp.isNotEmpty) {
       _ipController.text = savedIp;
@@ -87,12 +89,16 @@ class _TrackerScreenState extends State<TrackerScreen> {
     if (savedPort != null && savedPort.isNotEmpty) {
       _portController.text = savedPort;
     }
+    if (saved60fps != null) {
+      _is60fpsMode = saved60fps;
+    }
   }
 
   Future<void> _saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('saved_ip', _ipController.text.trim());
     await prefs.setString('saved_port', _portController.text.trim());
+    await prefs.setBool('saved_60fps', _is60fpsMode);
   }
 
   void _onARKitViewCreated(ARKitController controller) {
@@ -133,8 +139,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
         if (_tcpClientSocket != null) {
           try {
             _tcpClientSocket!.add(_packetUint8ListView);
-            _tcpClientSocket!
-                .flush(); // Forces raw binary chunk frames down the wire instantly
+            _tcpClientSocket!.flush();
             _packetsSent++;
           } catch (e) {
             _tcpClientSocket?.close();
@@ -165,8 +170,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
     _updateFaceMesh(anchor);
 
     // 5. VISUAL LAYOUT ENGINE THROTTLE
-    final bool shouldUpdateUiLayout =
-        _showCamera || (now.difference(_lastUiUpdate).inMilliseconds >= 100);
+    final bool shouldUpdateUiLayout = _showCamera ||
+        _is60fpsMode ||
+        (now.difference(_lastUiUpdate).inMilliseconds >= 100);
 
     if (shouldUpdateUiLayout) {
       _lastUiUpdate = now;
@@ -232,7 +238,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
         setState(() => _streaming = true);
 
         _tcpServer!.listen((Socket client) {
-          _tcpClientSocket?.close(); // Clear any zombie stream clients cleanly
+          _tcpClientSocket?.close();
           _tcpClientSocket = client;
           _tcpClientSocket!.setOption(SocketOption.tcpNoDelay, true);
           setState(() => _faceDetected = true);
@@ -325,6 +331,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                 color: Colors.white),
                           ),
                           const Spacer(),
+                          _BorderedStatusChip(is60Fps: _is60fpsMode),
+                          const SizedBox(width: 12),
                           _StatusDot(
                               streaming: _streaming,
                               faceDetected: _faceDetected),
@@ -346,7 +354,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                       ),
                     const SizedBox(height: 20),
                     if (!_showCamera) ...[
-                      if (!_streaming)
+                      if (!_streaming) ...[
                         Row(
                           children: [
                             Expanded(
@@ -368,6 +376,31 @@ class _TrackerScreenState extends State<TrackerScreen> {
                             ),
                           ],
                         ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ChoiceChip(
+                                label:
+                                    const Center(child: Text('Adaptive FPS')),
+                                selected: !_is60fpsMode,
+                                onSelected: (val) =>
+                                    setState(() => _is60fpsMode = false),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: ChoiceChip(
+                                label: const Center(
+                                    child: Text('Unthrottled 60 FPS')),
+                                selected: _is60fpsMode,
+                                onSelected: (val) =>
+                                    setState(() => _is60fpsMode = true),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                       const SizedBox(height: 20),
                       const Text('LIVE POSE',
                           style: TextStyle(
@@ -559,6 +592,35 @@ class _StatusDot extends StatelessWidget {
         width: 10,
         height: 10,
         decoration: BoxDecoration(color: color, shape: BoxShape.circle));
+  }
+}
+
+class _BorderedStatusChip extends StatelessWidget {
+  final bool is60Fps;
+  const _BorderedStatusChip({required this.is60Fps});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: is60Fps
+              ? const Color(0xFF00D4FF)
+              : Colors.grey.withValues(alpha: 0.5),
+          width: 1,
+        ),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        is60Fps ? '60Hz mode' : '30Hz Engine',
+        style: TextStyle(
+          color: is60Fps ? const Color(0xFF00D4FF) : Colors.grey,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
   }
 }
 
