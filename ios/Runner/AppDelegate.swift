@@ -2,47 +2,30 @@ import UIKit
 import Flutter
 import AVFoundation
 import Network
-import CoreImage
 
 // =============================================================================
-//  CameraStreamer — STRICT 60fps front-camera streamer for SimulatorTrack.
-//
-//  Captures the iPhone front camera locked to exactly 60fps via AVFoundation
-//  (the Flutter `camera` plugin can't lock frame rate — this can), hardware-
-//  JPEG-encodes each frame with a Metal-backed CIContext, and streams it to the
-//  desktop over TCP using the protocol the PC expects:
-//        [4-byte big-endian length][JPEG bytes]   repeated.
-//
-//  Add this file to ios/Runner/ in Xcode, and wire the MethodChannel from
-//  AppDelegate (see AppDelegate_camera_channel.swift). No pubspec/Dart camera
-//  plugin is needed for this path — Dart only calls start/stop.
+//  CameraStreamer — STRICT 60fps front‑camera streamer.
 // =============================================================================
 final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     private let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
     private let camQueue = DispatchQueue(label: "simtrack.camera.stream")
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false]) // Metal/GPU
-    private let rgb = CGColorSpaceCreateDeviceRGB()
-
     private var connection: NWConnection?
     private var isReady = false
-    private var isSending = false          // backpressure: one frame in flight at a time
+    private var isSending = false
     private var streaming = false
 
     private var frameCount = 0
     private var lastFps = Date()
 
-    /// Called ~1x/sec on the main thread with the measured send rate.
     var onFps: ((Int) -> Void)?
-    /// Called on the main thread on fatal stop (so Dart can update its UI).
     var onStopped: (() -> Void)?
 
     // MARK: - Public control
 
     func start(ip: String, port: UInt16, quality: CGFloat = 0.5) {
         if streaming { stop() }
-
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard let self = self else { return }
             guard granted else { DispatchQueue.main.async { self.onStopped?() }; return }
@@ -85,15 +68,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if session.canAddOutput(output) { session.addOutput(output) }
         session.commitConfiguration()
 
-        // Upright in portrait hold.
         if let conn = output.connection(with: .video), conn.isVideoOrientationSupported {
             conn.videoOrientation = .portrait
         }
 
-        // ---- LOCK 60fps ----
-        // Pick the smallest-resolution format that supports >=60fps so the
-        // 60fps is sustainable for encode + network, then pin min == max
-        // frame duration to 1/60 so the camera cannot drop below 60.
         lock60fps(device)
 
         setupConnection(ip: ip, port: port)
@@ -116,15 +94,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         do {
             try device.lockForConfiguration()
-            if let fmt = best { device.activeFormat = fmt }   // a format that can do 60
+            if let fmt = best { device.activeFormat = fmt }
             let sixty = CMTimeMake(value: 1, timescale: 60)
-            device.activeVideoMinFrameDuration = sixty        // floor 60fps
-            device.activeVideoMaxFrameDuration = sixty        // ceiling 60fps -> locked
+            device.activeVideoMinFrameDuration = sixty
+            device.activeVideoMaxFrameDuration = sixty
             device.unlockForConfiguration()
-        } catch {
-            // If the device truly can't do 60 it keeps its default; the PC will
-            // show the real rate. Every modern iPhone front camera supports 60.
-        }
+        } catch { }
     }
 
     private func setupConnection(ip: String, port: UInt16) {
@@ -149,29 +124,31 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         conn.start(queue: camQueue)
     }
 
-    // MARK: - Per-frame (runs on camQueue at 60fps)
+    // MARK: - Per‑frame (changed to UIImage encoder)
 
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection) {
-        guard streaming, isReady, !isSending,
-              let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+                       from avConnection: AVCaptureConnection) {
 
-        let ci = CIImage(cvPixelBuffer: pb)
-        let opts: [CIImageRepresentationOption: Any] =
-            [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): jpegQuality]
-        guard let jpeg = ciContext.jpegRepresentation(of: ci, colorSpace: rgb, options: opts) else { return }
+        guard streaming, isReady, !isSending,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // --- robust JPEG via UIImage (works every time) ---
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return }
+        let uiImage = UIImage(cgImage: cgImage)
+        guard let jpegData = uiImage.jpegData(compressionQuality: jpegQuality) else { return }
 
         var header = Data(count: 4)
-        let len = UInt32(jpeg.count)
+        let len = UInt32(jpegData.count)
         header[0] = UInt8((len >> 24) & 0xff)
         header[1] = UInt8((len >> 16) & 0xff)
         header[2] = UInt8((len >> 8) & 0xff)
         header[3] = UInt8(len & 0xff)
 
         isSending = true
-        // FIX: use self.connection to reference the network property, not the AVCaptureConnection parameter
-        self.connection?.send(content: header + jpeg, completion: .contentProcessed { [weak self] _ in
+        self.connection?.send(content: header + jpegData, completion: .contentProcessed { [weak self] _ in
             self?.isSending = false
         })
 
@@ -191,52 +168,41 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 // -----------------------------------------------------------------------------
 @main
 @objc class AppDelegate: FlutterAppDelegate {
-    
-    // MARK: - Proximity state
-    private var initialUserBrightness: CGFloat = 0.5
 
-    // MARK: - Camera streamer instance
+    private var initialUserBrightness: CGFloat = 0.5
     private let cameraStreamer = CameraStreamer()
 
     override func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
-        let controller : FlutterViewController = window?.rootViewController as! FlutterViewController
-        
-        // ---------- Proximity channel (existing) ----------
+        let controller = window?.rootViewController as! FlutterViewController
+
+        // Proximity channel
         let nativeChannel = FlutterMethodChannel(name: "com.headtracker.app/native",
                                                   binaryMessenger: controller.binaryMessenger)
-        
-        nativeChannel.setMethodCallHandler({ [weak self] (call: FlutterMethodCall, result: @escaping FlutterResult) in
+        nativeChannel.setMethodCallHandler { [weak self] call, result in
             guard let self = self else { return }
-            
-            if call.method == "toggleProximity" {
-                if let args = call.arguments as? [String: Any],
-                   let enable = args["enable"] as? Bool {
-                    
-                    DispatchQueue.main.async {
-                        if enable {
-                            self.initialUserBrightness = UIScreen.main.brightness
-                            UIScreen.main.brightness = 0.0
-                        } else {
-                            UIScreen.main.brightness = self.initialUserBrightness
-                        }
+            if call.method == "toggleProximity",
+               let args = call.arguments as? [String: Any],
+               let enable = args["enable"] as? Bool {
+                DispatchQueue.main.async {
+                    if enable {
+                        self.initialUserBrightness = UIScreen.main.brightness
+                        UIScreen.main.brightness = 0.0
+                    } else {
+                        UIScreen.main.brightness = self.initialUserBrightness
                     }
-                    result(true)
-                } else {
-                    result(FlutterError(code: "BAD_ARGS", message: "Arguments malformed", details: nil))
                 }
+                result(true)
             } else {
                 result(FlutterMethodNotImplemented)
             }
-        })
+        }
 
-        // ---------- Camera stream channel (new) ----------
-        let cameraChannel = FlutterMethodChannel(
-            name: "com.headtracker.app/camera",
-            binaryMessenger: controller.binaryMessenger)
-        
+        // Camera channel
+        let cameraChannel = FlutterMethodChannel(name: "com.headtracker.app/camera",
+                                                  binaryMessenger: controller.binaryMessenger)
         cameraChannel.setMethodCallHandler { [weak self] call, result in
             guard let self = self else { result(false); return }
             switch call.method {
@@ -255,7 +221,6 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             }
         }
 
-        // Push live fps / disconnect events back to Dart
         cameraStreamer.onFps = { fps in
             cameraChannel.invokeMethod("fps", arguments: fps)
         }

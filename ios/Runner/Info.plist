@@ -26,8 +26,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>HeadTracker uses the front camera for ARKit face tracking to detect head position and orientation.</string>
-	<key>NSCameraUsageDescription</key>
-    <string>Used to stream the camera to the desktop app.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+    <string>This app needs local network access to stream the camera.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
