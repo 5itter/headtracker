@@ -170,7 +170,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         header[3] = UInt8(len & 0xff)
 
         isSending = true
-        connection?.send(content: header + jpeg, completion: .contentProcessed { [weak self] _ in
+        // FIX: use self.connection to reference the network property, not the AVCaptureConnection parameter
+        self.connection?.send(content: header + jpeg, completion: .contentProcessed { [weak self] _ in
             self?.isSending = false
         })
 
