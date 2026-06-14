@@ -6,6 +6,8 @@ environment:
   sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
+  camera: ^0.11.0
+  image: ^4.2.0
   flutter:
     sdk: flutter
   arkit_plugin: ^1.0.4
