@@ -2,6 +2,9 @@ import UIKit
 import Flutter
 import AVFoundation
 import Network
+import CoreImage
+import CoreMedia
+import CoreVideo
 
 // =============================================================================
 //  CameraStreamer — STRICT 60fps front‑camera streamer.
@@ -11,7 +14,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
     private let camQueue = DispatchQueue(label: "simtrack.camera.stream")
+    private let ciContext = CIContext()          // reused across frames (creating one per frame is slow)
     private var connection: NWConnection?
+    private var listener: NWListener?            // USB mode: the phone is the server
+    private var useUsb = false
     private var isReady = false
     private var isSending = false
     private var streaming = false
@@ -24,8 +30,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     // MARK: - Public control
 
-    func start(ip: String, port: UInt16, quality: CGFloat = 0.5) {
+    func start(ip: String, port: UInt16, quality: CGFloat = 0.5, usb: Bool = false) {
         if streaming { stop() }
+        useUsb = usb
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard let self = self else { return }
             guard granted else { DispatchQueue.main.async { self.onStopped?() }; return }
@@ -41,6 +48,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self.session.outputs.forEach { self.session.removeOutput($0) }
             self.connection?.cancel()
             self.connection = nil
+            self.listener?.cancel()
+            self.listener = nil
             self.isReady = false
             self.isSending = false
         }
@@ -74,7 +83,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         lock60fps(device)
 
-        setupConnection(ip: ip, port: port)
+        if useUsb { startServer(port: port) }      // USB: PC dials us via iproxy
+        else { setupConnection(ip: ip, port: port) } // Wi-Fi: we dial the PC
 
         session.startRunning()
         streaming = true
@@ -124,6 +134,37 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         conn.start(queue: camQueue)
     }
 
+    // USB mode: listen on `port`; the PC connects through iproxy and we stream
+    // frames down the accepted connection.
+    private func startServer(port: UInt16) {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
+        let tcp = NWProtocolTCP.Options(); tcp.noDelay = true
+        let params = NWParameters(tls: nil, tcp: tcp)
+        params.allowLocalEndpointReuse = true
+        do {
+            listener = try NWListener(using: params, on: nwPort)
+        } catch {
+            DispatchQueue.main.async { self.onStopped?() }
+            return
+        }
+        listener?.newConnectionHandler = { [weak self] conn in
+            guard let self = self else { return }
+            self.connection?.cancel()
+            self.isReady = false
+            self.connection = conn
+            conn.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
+                switch state {
+                case .ready: self.isReady = true
+                case .failed, .cancelled: self.isReady = false
+                default: break
+                }
+            }
+            conn.start(queue: self.camQueue)
+        }
+        listener?.start(queue: camQueue)
+    }
+
     // MARK: - Per‑frame (changed to UIImage encoder)
 
     func captureOutput(_ output: AVCaptureOutput,
@@ -135,8 +176,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         // --- robust JPEG via UIImage (works every time) ---
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext()
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return }
+        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
         let uiImage = UIImage(cgImage: cgImage)
         guard let jpegData = uiImage.jpegData(compressionQuality: jpegQuality) else { return }
 
@@ -211,7 +251,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 let ip = args?["ip"] as? String ?? ""
                 let port = UInt16(args?["port"] as? Int ?? 4243)
                 let quality = CGFloat(args?["quality"] as? Double ?? 0.5)
-                self.cameraStreamer.start(ip: ip, port: port, quality: quality)
+                let usb = (args?["usb"] as? Bool) ?? false
+                self.cameraStreamer.start(ip: ip, port: port, quality: quality, usb: usb)
                 result(true)
             case "stop":
                 self.cameraStreamer.stop()

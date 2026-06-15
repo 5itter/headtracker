@@ -66,6 +66,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   // ADDED: camera-stream mode (native 60fps streamer, driven over a MethodChannel)
   bool _cameraMode =
       false; // when true, stream camera frames instead of ARKit pose
+  bool _camUsbMode = false; // within camera mode: USB (true) or Wi-Fi (false)
   String _videoStatus = '';
 
   InternetAddress? _targetAddress;
@@ -250,22 +251,25 @@ class _TrackerScreenState extends State<TrackerScreen> {
   // ===========================================================================
   Future<void> _startCameraStream() async {
     final ip = _ipController.text.trim();
-    if (ip.isEmpty) {
+    if (!_camUsbMode && ip.isEmpty) {
       _showError('Enter the PC IP address');
       return;
     }
     await _saveSettings();
     try {
       await _cameraChannel.invokeMethod('start', {
-        'ip': ip,
+        'ip': ip, // ignored in USB mode (the phone is the server)
         'port': kVideoPort,
+        'usb': _camUsbMode,
         'quality': 0.5, // JPEG quality; lower = less bandwidth, still 60fps
       });
       setState(() {
         _streaming = true;
         _faceDetected = true;
         _fps = 0;
-        _videoStatus = 'Streaming 60fps to $ip:$kVideoPort';
+        _videoStatus = _camUsbMode
+            ? 'USB: waiting for PC (iproxy $kVideoPort)'
+            : 'Wi-Fi: streaming to $ip:$kVideoPort';
       });
     } catch (e) {
       _showError('Camera stream failed: $e');
@@ -525,6 +529,34 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               ),
                             ],
                           ),
+                        ] else ...[
+                          // --- camera transport: Wi-Fi vs USB ---
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              const Text('Stream over:',
+                                  style: TextStyle(
+                                      color: Colors.grey, fontSize: 13)),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: ChoiceChip(
+                                  label: const Center(child: Text('Wi-Fi')),
+                                  selected: !_camUsbMode,
+                                  onSelected: (_) =>
+                                      setState(() => _camUsbMode = false),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: ChoiceChip(
+                                  label: const Center(child: Text('USB')),
+                                  selected: _camUsbMode,
+                                  onSelected: (_) =>
+                                      setState(() => _camUsbMode = true),
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
                       ],
                       const SizedBox(height: 20),
@@ -596,8 +628,10 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         }),
                         const SizedBox(height: 24),
                       ],
-                      // IP field for Wi-Fi pose and Camera modes (both target the PC).
-                      if (!_isUsbMode) ...[
+                      // IP field only for Wi-Fi transports (pose Wi-Fi or camera Wi-Fi);
+                      // USB modes don't need it (the phone is the server).
+                      if ((!_cameraMode && !_isUsbMode) ||
+                          (_cameraMode && !_camUsbMode)) ...[
                         _InputField(
                             controller: _ipController,
                             label: 'PC IP Address',
