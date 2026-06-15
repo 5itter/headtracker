@@ -36,6 +36,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func start(ip: String, port: UInt16, quality: CGFloat = 0.5, usb: Bool = false) {
         if streaming { stop() }
         useUsb = usb
+        // follow the phone's physical orientation so landscape streams upright
+        DispatchQueue.main.async {
+            UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+            NotificationCenter.default.addObserver(self, selector: #selector(self.orientationChanged),
+                name: UIDevice.orientationDidChangeNotification, object: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.orientationChanged() }
+        }
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard let self = self else { return }
             guard granted else { DispatchQueue.main.async { self.onStopped?() }; return }
@@ -43,8 +50,32 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
     }
 
+    // MARK: - Orientation (default landscape, follows the device live)
+
+    private func setVideoOrientation(_ vo: AVCaptureVideoOrientation) {
+        guard let conn = output.connection(with: .video), conn.isVideoOrientationSupported else { return }
+        conn.videoOrientation = vo
+    }
+    private func videoOrientation(for dev: UIDeviceOrientation) -> AVCaptureVideoOrientation {
+        switch dev {
+        case .landscapeLeft:      return .landscapeRight   // (UIDevice and AVCapture landscape are swapped)
+        case .landscapeRight:     return .landscapeLeft
+        case .portrait:           return .portrait
+        case .portraitUpsideDown: return .portraitUpsideDown
+        default:                  return .landscapeRight   // face up/down/unknown -> default landscape
+        }
+    }
+    @objc private func orientationChanged() {
+        let dev = UIDevice.current.orientation
+        camQueue.async { self.setVideoOrientation(self.videoOrientation(for: dev)) }
+    }
+
     func stop() {
         streaming = false
+        DispatchQueue.main.async {
+            NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
+            UIDevice.current.endGeneratingDeviceOrientationNotifications()
+        }
         camQueue.async {
             if self.session.isRunning { self.session.stopRunning() }
             self.session.inputs.forEach { self.session.removeInput($0) }
@@ -100,9 +131,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         session.commitConfiguration()
 
-        if let conn = output.connection(with: .video), conn.isVideoOrientationSupported {
-            conn.videoOrientation = .portrait
-        }
+        setVideoOrientation(.landscapeRight)       // default landscape; the observer refines it live
 
         if useUsb {
             startServer(port: port)                 // USB: PC dials us via iproxy
