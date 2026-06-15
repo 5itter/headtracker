@@ -104,8 +104,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             conn.videoOrientation = .portrait
         }
 
-        if useUsb { startServer(port: port) }      // USB: PC dials us via iproxy
-        else { setupConnection(ip: ip, port: port) } // Wi-Fi: we dial the PC
+        if useUsb {
+            startServer(port: port)                 // USB: PC dials us via iproxy
+        } else {
+            pokeLocalNetworkPermission()            // make iOS show the Local Network prompt
+            setupConnection(ip: ip, port: port)     // Wi-Fi: we dial the PC
+        }
 
         session.startRunning()
         streaming = true
@@ -159,6 +163,21 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         connection = conn
         conn.start(queue: camQueue)
+    }
+
+    // iOS 14+ requires Local Network permission to reach a LAN IP. A direct
+    // NWConnection sometimes doesn't surface the prompt; browsing for a Bonjour
+    // service reliably does. If denied, the Wi-Fi connection silently stalls —
+    // this makes sure the user gets the prompt (then enable it in Settings).
+    private var permBrowser: NWBrowser?
+    private func pokeLocalNetworkPermission() {
+        let browser = NWBrowser(for: .bonjour(type: "_http._tcp", domain: nil), using: NWParameters())
+        browser.stateUpdateHandler = { _ in }
+        permBrowser = browser
+        browser.start(queue: camQueue)
+        camQueue.asyncAfter(deadline: .now() + 4) { [weak self] in
+            self?.permBrowser?.cancel(); self?.permBrowser = nil
+        }
     }
 
     // USB mode: listen on `port`; the PC connects through iproxy and we stream
