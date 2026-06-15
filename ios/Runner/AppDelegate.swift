@@ -24,9 +24,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private var frameCount = 0
     private var lastFps = Date()
+    private var capturedCount = 0          // frames the camera delivered (alive even if not connected)
+    private var lastCapReport = Date()
 
-    var onFps: ((Int) -> Void)?
+    var onFps: ((Int) -> Void)?            // frames SENT to the PC per second
     var onStopped: (() -> Void)?
+    var onStatus: ((String) -> Void)?      // human-readable status for the app UI
 
     // MARK: - Public control
 
@@ -62,37 +65,62 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func configureAndRun(ip: String, port: UInt16, quality: CGFloat) {
         jpegQuality = quality
 
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
-              let input = try? AVCaptureDeviceInput(device: device) else {
-            DispatchQueue.main.async { self.onStopped?() }
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else {
+            DispatchQueue.main.async { self.onStatus?("No front camera"); self.onStopped?() }
+            return
+        }
+        let input: AVCaptureDeviceInput
+        do { input = try AVCaptureDeviceInput(device: device) }
+        catch {
+            DispatchQueue.main.async { self.onStatus?("Camera busy (ARKit still running?)"); self.onStopped?() }
             return
         }
 
         session.beginConfiguration()
+        session.sessionPreset = .inputPriority                 // we drive the format via activeFormat
+        session.inputs.forEach { session.removeInput($0) }     // clean slate on re-start
+        session.outputs.forEach { session.removeOutput($0) }
         if session.canAddInput(input) { session.addInput(input) }
 
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: camQueue)
         if session.canAddOutput(output) { session.addOutput(output) }
+
+        // pick + lock a 60fps-capable format INSIDE the configuration (correct order)
+        if let fmt = best60Format(device) {
+            do {
+                try device.lockForConfiguration()
+                device.activeFormat = fmt
+                let sixty = CMTimeMake(value: 1, timescale: 60)
+                device.activeVideoMinFrameDuration = sixty
+                device.activeVideoMaxFrameDuration = sixty
+                device.unlockForConfiguration()
+            } catch { }
+        }
         session.commitConfiguration()
 
         if let conn = output.connection(with: .video), conn.isVideoOrientationSupported {
             conn.videoOrientation = .portrait
         }
 
-        lock60fps(device)
-
         if useUsb { startServer(port: port) }      // USB: PC dials us via iproxy
         else { setupConnection(ip: ip, port: port) } // Wi-Fi: we dial the PC
 
         session.startRunning()
         streaming = true
-        frameCount = 0
-        lastFps = Date()
+        frameCount = 0; lastFps = Date()
+        capturedCount = 0; lastCapReport = Date()
+        let onAir = session.isRunning
+        DispatchQueue.main.async {
+            self.onStatus?(onAir
+                ? (self.useUsb ? "Camera on — USB, waiting for PC on 4243"
+                               : "Camera on — Wi-Fi, connecting to \(ip)")
+                : "Camera failed to start")
+        }
     }
 
-    private func lock60fps(_ device: AVCaptureDevice) {
+    private func best60Format(_ device: AVCaptureDevice) -> AVCaptureDevice.Format? {
         var best: AVCaptureDevice.Format?
         var bestWidth = Int.max
         for format in device.formats {
@@ -102,14 +130,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 if w < bestWidth { bestWidth = w; best = format }
             }
         }
-        do {
-            try device.lockForConfiguration()
-            if let fmt = best { device.activeFormat = fmt }
-            let sixty = CMTimeMake(value: 1, timescale: 60)
-            device.activeVideoMinFrameDuration = sixty
-            device.activeVideoMaxFrameDuration = sixty
-            device.unlockForConfiguration()
-        } catch { }
+        return best
     }
 
     private func setupConnection(ip: String, port: UInt16) {
@@ -122,11 +143,17 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         conn.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             switch state {
-            case .ready: self.isReady = true
-            case .failed, .cancelled:
+            case .ready:
+                self.isReady = true
+                DispatchQueue.main.async { self.onStatus?("Connected — streaming to PC") }
+            case .waiting(let err):
                 self.isReady = false
-                self.streaming = false
-                DispatchQueue.main.async { self.onStopped?() }
+                DispatchQueue.main.async { self.onStatus?("Can't reach PC: \(err) — check IP / desktop netcam / Local Network permission") }
+            case .failed(let err):
+                self.isReady = false; self.streaming = false
+                DispatchQueue.main.async { self.onStatus?("Connection failed: \(err)"); self.onStopped?() }
+            case .cancelled:
+                self.isReady = false
             default: break
             }
         }
@@ -155,8 +182,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             conn.stateUpdateHandler = { [weak self] state in
                 guard let self = self else { return }
                 switch state {
-                case .ready: self.isReady = true
-                case .failed, .cancelled: self.isReady = false
+                case .ready:
+                    self.isReady = true
+                    DispatchQueue.main.async { self.onStatus?("Connected — streaming to PC (USB)") }
+                case .failed, .cancelled:
+                    self.isReady = false
                 default: break
                 }
             }
@@ -171,8 +201,22 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                        didOutput sampleBuffer: CMSampleBuffer,
                        from avConnection: AVCaptureConnection) {
 
-        guard streaming, isReady, !isSending,
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard streaming, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // The camera IS alive if we get here — report captured fps so 0 "sent"
+        // fps doesn't look like a dead camera. (Sent fps comes from onFps below.)
+        capturedCount += 1
+        let capNow = Date()
+        if capNow.timeIntervalSince(lastCapReport) >= 1.0 {
+            let cfps = capturedCount; capturedCount = 0; lastCapReport = capNow
+            let ready = isReady
+            DispatchQueue.main.async {
+                self.onStatus?(ready ? "Streaming \(cfps)fps to PC" : "Camera live \(cfps)fps — connecting to PC…")
+            }
+        }
+
+        // Only encode+send once the PC connection is ready, one frame in flight.
+        guard isReady, !isSending else { return }
 
         // --- robust JPEG via UIImage (works every time) ---
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
@@ -264,6 +308,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         cameraStreamer.onFps = { fps in
             cameraChannel.invokeMethod("fps", arguments: fps)
+        }
+        cameraStreamer.onStatus = { msg in
+            cameraChannel.invokeMethod("status", arguments: msg)
         }
         cameraStreamer.onStopped = {
             cameraChannel.invokeMethod("stopped", arguments: nil)

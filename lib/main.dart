@@ -104,11 +104,13 @@ class _TrackerScreenState extends State<TrackerScreen> {
     _packetUint8ListView = _packetBuffer.buffer.asUint8List();
     _loadSavedSettings();
 
-    // Live fps / disconnect events from the native 60fps streamer.
+    // Live fps / status / disconnect events from the native 60fps streamer.
     _cameraChannel.setMethodCallHandler((call) async {
       if (!mounted) return;
       if (call.method == 'fps') {
         setState(() => _fps = (call.arguments as int?) ?? 0);
+      } else if (call.method == 'status') {
+        setState(() => _videoStatus = (call.arguments as String?) ?? '');
       } else if (call.method == 'stopped') {
         setState(() {
           _streaming = false;
@@ -582,7 +584,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
                             children: [
                               Text(
                                 _streaming
-                                    ? '$_fps fps  •  locked 60fps stream'
+                                    ? (_videoStatus.isNotEmpty
+                                        ? _videoStatus
+                                        : 'Starting camera…')
                                     : 'Streams this phone\'s camera to the SimulatorTrack PC app, where its AI face-tracking runs on the feed.',
                                 style: TextStyle(
                                     color: _streaming
@@ -593,7 +597,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                'On the PC: Devices → Webcam AI → "Use iPhone as camera". Hold the phone normally (portrait) — the image is sent upright.',
+                                _camUsbMode
+                                    ? 'USB: on the PC enable Devices → "Use iPhone as camera" → USB (it runs iproxy & dials this phone).'
+                                    : 'Wi-Fi: on the PC enable Devices → "Use iPhone as camera" → Wi-Fi, and make sure you entered this PC\'s IP above.',
                                 style: TextStyle(
                                     color: Colors.grey.withValues(alpha: 0.8),
                                     fontSize: 11,
