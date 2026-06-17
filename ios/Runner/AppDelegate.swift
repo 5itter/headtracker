@@ -30,6 +30,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     var onPreview: ((Data) -> Void)?
     private var lastPreview = Date(timeIntervalSince1970: 0)
 
+    private var watchdog: DispatchSourceTimer?       // auto-reconnect when not connected
+    private var lastConnected = Date()
+    private var streamIp = ""
+    private var streamPort: UInt16 = 4243
+
     private var frameCount = 0
     private var lastFps = Date()
     private var capturedCount = 0          // frames the camera delivered (alive even if not connected)
@@ -89,6 +94,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             UIDevice.current.endGeneratingDeviceOrientationNotifications()
         }
         camQueue.async {
+            self.watchdog?.cancel(); self.watchdog = nil
             if self.session.isRunning { self.session.stopRunning() }
             self.session.inputs.forEach { self.session.removeInput($0) }
             self.session.outputs.forEach { self.session.removeOutput($0) }
@@ -120,6 +126,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func configureAndRun(ip: String, port: UInt16, quality: CGFloat) {
         jpegQuality = quality
+        streamIp = ip
+        streamPort = port
 
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: camPosition) else {
             DispatchQueue.main.async { self.onStatus?("No camera for the selected lens"); self.onStopped?() }
@@ -171,6 +179,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         session.startRunning()
         streaming = true
+        startWatchdog()
         frameCount = 0; lastFps = Date()
         capturedCount = 0; lastCapReport = Date()
         let onAir = session.isRunning
@@ -197,16 +206,23 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func best60Format(_ device: AVCaptureDevice) -> AVCaptureDevice.Format? {
+        // Prefer the HIGHEST resolution that still does 60fps, up to 1280 wide — more real pixels on
+        // the face = better tracking AND a sharper preview. (The old code picked the SMALLEST 60fps
+        // format, which is needlessly low-res.) Capped at 1280 so the per-frame JPEG encode keeps a
+        // solid 60fps send; falls back to the smallest 60fps format if nothing is <= 1280.
         var best: AVCaptureDevice.Format?
-        var bestWidth = Int.max
+        var bestWidth = 0
+        var fallback: AVCaptureDevice.Format?
+        var fallbackWidth = Int.max
         for format in device.formats {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             let w = Int(dims.width)
             for range in format.videoSupportedFrameRateRanges where range.maxFrameRate >= 60.0 {
-                if w < bestWidth { bestWidth = w; best = format }
+                if w <= 1280 && w > bestWidth { bestWidth = w; best = format }
+                if w < fallbackWidth { fallbackWidth = w; fallback = format }
             }
         }
-        return best
+        return best ?? fallback
     }
 
     private func setupConnection(ip: String, port: UInt16) {
@@ -262,8 +278,18 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         do {
             listener = try NWListener(using: params, on: nwPort)
         } catch {
-            DispatchQueue.main.async { self.onStopped?() }
+            DispatchQueue.main.async { self.onStatus?("USB bind failed on \(port): \(error)"); self.onStopped?() }
             return
+        }
+        listener?.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            switch state {
+            case .ready:
+                DispatchQueue.main.async { self.onStatus?("USB ready on \(port) — waiting for PC") }
+            case .failed(let err):
+                DispatchQueue.main.async { self.onStatus?("USB listener failed: \(err)") }
+            default: break
+            }
         }
         listener?.newConnectionHandler = { [weak self] conn in
             guard let self = self else { return }
@@ -284,6 +310,34 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             conn.start(queue: self.camQueue)
         }
         listener?.start(queue: camQueue)
+    }
+
+    /// Auto-reconnect watchdog: while streaming, if we're not connected for a few seconds, rebuild the
+    /// connection path (USB listener / Wi-Fi dial) so a stuck or missed connection self-heals — no
+    /// manual restart needed. Runs on camQueue (same queue as the connection handlers).
+    private func startWatchdog() {
+        watchdog?.cancel()
+        lastConnected = Date()
+        let t = DispatchSource.makeTimerSource(queue: camQueue)
+        t.schedule(deadline: .now() + 2.0, repeating: 2.0)
+        t.setEventHandler { [weak self] in
+            guard let self = self, self.streaming else { return }
+            if self.isReady { self.lastConnected = Date(); return }
+            if Date().timeIntervalSince(self.lastConnected) < 3.5 { return }
+            self.lastConnected = Date()
+            if self.useUsb {
+                self.connection?.cancel(); self.connection = nil
+                self.listener?.cancel();   self.listener = nil
+                self.startServer(port: self.streamPort)
+                DispatchQueue.main.async { self.onStatus?("USB: refreshing connection…") }
+            } else {
+                self.connection?.cancel(); self.connection = nil
+                self.setupConnection(ip: self.streamIp, port: self.streamPort)
+                DispatchQueue.main.async { self.onStatus?("Wi-Fi: reconnecting…") }
+            }
+        }
+        watchdog = t
+        t.resume()
     }
 
     // MARK: - Per‑frame (changed to UIImage encoder)
@@ -319,7 +373,22 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         if previewDue {
             lastPreview = nowTs
-            if let pj = uiImage.jpegData(compressionQuality: 0.3) {
+            // The preview is a SEPARATE, smaller copy just for the phone screen — NOT what the PC gets
+            // (the PC receives the full-resolution stream below). Downscale to ~640px at decent quality
+            // so it looks clean for framing while keeping the platform channel light.
+            let targetW: CGFloat = 640
+            let s = min(1.0, targetW / max(uiImage.size.width, 1))
+            let previewImg: UIImage
+            if s < 1.0 {
+                let sz = CGSize(width: uiImage.size.width * s, height: uiImage.size.height * s)
+                let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1
+                previewImg = UIGraphicsImageRenderer(size: sz, format: fmt).image { _ in
+                    uiImage.draw(in: CGRect(origin: .zero, size: sz))
+                }
+            } else {
+                previewImg = uiImage
+            }
+            if let pj = previewImg.jpegData(compressionQuality: 0.55) {
                 DispatchQueue.main.async { self.onPreview?(pj) }
             }
         }
