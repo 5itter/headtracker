@@ -22,6 +22,14 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var isSending = false
     private var streaming = false
 
+    private var device: AVCaptureDevice?
+    private var camPosition: AVCaptureDevice.Position = .front
+    private var zoomFactor: CGFloat = 1.0
+    private var lockAEAF = true
+    var previewEnabled = false                       // on-phone live preview (throttled)
+    var onPreview: ((Data) -> Void)?
+    private var lastPreview = Date(timeIntervalSince1970: 0)
+
     private var frameCount = 0
     private var lastFps = Date()
     private var capturedCount = 0          // frames the camera delivered (alive even if not connected)
@@ -33,9 +41,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     // MARK: - Public control
 
-    func start(ip: String, port: UInt16, quality: CGFloat = 0.5, usb: Bool = false) {
+    func start(ip: String, port: UInt16, quality: CGFloat = 0.5, usb: Bool = false,
+               position: AVCaptureDevice.Position = .front, zoom: CGFloat = 1.0, lockAEAF: Bool = true) {
         if streaming { stop() }
         useUsb = usb
+        camPosition = position
+        zoomFactor = zoom
+        self.lockAEAF = lockAEAF
         // follow the phone's physical orientation so landscape streams upright
         DispatchQueue.main.async {
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
@@ -89,6 +101,19 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
     }
 
+    /// Live zoom while streaming — applied straight to the active capture device.
+    func setZoom(_ z: CGFloat) {
+        camQueue.async { [weak self] in
+            guard let self = self, let dev = self.device else { return }
+            self.zoomFactor = z
+            do {
+                try dev.lockForConfiguration()
+                dev.videoZoomFactor = max(1.0, min(z, dev.activeFormat.videoMaxZoomFactor))
+                dev.unlockForConfiguration()
+            } catch { }
+        }
+    }
+
     // MARK: - Setup
 
     private var jpegQuality: CGFloat = 0.5
@@ -96,10 +121,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func configureAndRun(ip: String, port: UInt16, quality: CGFloat) {
         jpegQuality = quality
 
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else {
-            DispatchQueue.main.async { self.onStatus?("No front camera"); self.onStopped?() }
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: camPosition) else {
+            DispatchQueue.main.async { self.onStatus?("No camera for the selected lens"); self.onStopped?() }
             return
         }
+        self.device = device
         let input: AVCaptureDeviceInput
         do { input = try AVCaptureDeviceInput(device: device) }
         catch {
@@ -126,6 +152,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 let sixty = CMTimeMake(value: 1, timescale: 60)
                 device.activeVideoMinFrameDuration = sixty
                 device.activeVideoMaxFrameDuration = sixty
+                // Zoom: crops the (high-res) sensor. On the back camera this adds REAL detail on the
+                // face since the sensor far exceeds the streamed resolution. Clamped to the format max.
+                device.videoZoomFactor = max(1.0, min(zoomFactor, fmt.videoMaxZoomFactor))
                 device.unlockForConfiguration()
             } catch { }
         }
@@ -150,6 +179,20 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 ? (self.useUsb ? "Camera on — USB, waiting for PC on 4243"
                                : "Camera on — Wi-Fi, connecting to \(ip)")
                 : "Camera failed to start")
+        }
+
+        // Lock auto-exposure & auto-focus after a brief settle so they stop hunting frame-to-frame
+        // (a real raw-jitter source). The front camera is fixed-focus; guards skip unsupported modes.
+        if lockAEAF {
+            camQueue.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self = self, let dev = self.device else { return }
+                do {
+                    try dev.lockForConfiguration()
+                    if dev.isExposureModeSupported(.locked) { dev.exposureMode = .locked }
+                    if dev.isFocusModeSupported(.locked)    { dev.focusMode = .locked }
+                    dev.unlockForConfiguration()
+                } catch { }
+            }
         }
     }
 
@@ -263,14 +306,25 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             }
         }
 
-        // Only encode+send once the PC connection is ready, one frame in flight.
-        guard isReady, !isSending else { return }
+        // Decode once, reuse for both the (throttled) on-phone preview and the PC stream.
+        let nowTs = Date()
+        let streamDue  = isReady && !isSending
+        let previewDue = previewEnabled && nowTs.timeIntervalSince(lastPreview) >= 0.08   // ~12fps preview
+        guard streamDue || previewDue else { return }
 
         // --- robust JPEG via UIImage (works every time) ---
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
         let uiImage = UIImage(cgImage: cgImage)
-        guard let jpegData = uiImage.jpegData(compressionQuality: jpegQuality) else { return }
+
+        if previewDue {
+            lastPreview = nowTs
+            if let pj = uiImage.jpegData(compressionQuality: 0.3) {
+                DispatchQueue.main.async { self.onPreview?(pj) }
+            }
+        }
+
+        guard streamDue, let jpegData = uiImage.jpegData(compressionQuality: jpegQuality) else { return }
 
         var header = Data(count: 4)
         let len = UInt32(jpegData.count)
@@ -344,10 +398,24 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 let port = UInt16(args?["port"] as? Int ?? 4243)
                 let quality = CGFloat(args?["quality"] as? Double ?? 0.5)
                 let usb = (args?["usb"] as? Bool) ?? false
-                self.cameraStreamer.start(ip: ip, port: port, quality: quality, usb: usb)
+                let useBack = (args?["back"] as? Bool) ?? false
+                let zoom = CGFloat(args?["zoom"] as? Double ?? 1.0)
+                // Never let iOS auto-lock while streaming — a screen-off suspends capture and kills tracking.
+                UIApplication.shared.isIdleTimerDisabled = true
+                self.cameraStreamer.start(ip: ip, port: port, quality: quality, usb: usb,
+                                          position: useBack ? .back : .front, zoom: zoom)
                 result(true)
             case "stop":
                 self.cameraStreamer.stop()
+                UIApplication.shared.isIdleTimerDisabled = false
+                result(true)
+            case "setPreview":
+                let on = ((call.arguments as? [String: Any])?["enabled"] as? Bool) ?? false
+                self.cameraStreamer.previewEnabled = on
+                result(true)
+            case "setZoom":
+                let z = CGFloat(((call.arguments as? [String: Any])?["zoom"] as? Double) ?? 1.0)
+                self.cameraStreamer.setZoom(z)
                 result(true)
             default:
                 result(FlutterMethodNotImplemented)
@@ -362,6 +430,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         cameraStreamer.onStopped = {
             cameraChannel.invokeMethod("stopped", arguments: nil)
+        }
+        cameraStreamer.onPreview = { data in
+            cameraChannel.invokeMethod("preview", arguments: FlutterStandardTypedData(bytes: data))
         }
 
         GeneratedPluginRegistrant.register(with: self)

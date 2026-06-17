@@ -67,6 +67,10 @@ class _TrackerScreenState extends State<TrackerScreen> {
   bool _cameraMode =
       false; // when true, stream camera frames instead of ARKit pose
   bool _camUsbMode = false; // within camera mode: USB (true) or Wi-Fi (false)
+  bool _camUseBack = false; // camera lens: back (real optical zoom + better sensor) vs front
+  double _camZoom = 1.0; // sensor zoom factor (back lens benefits most)
+  bool _camPreviewOn = true; // show the live camera feed on the phone itself (for framing/zoom)
+  Uint8List? _previewBytes; // latest preview JPEG pushed up from the native streamer
   String _videoStatus = '';
 
   InternetAddress? _targetAddress;
@@ -117,6 +121,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
           _faceDetected = false;
           _videoStatus = 'Disconnected';
         });
+      } else if (call.method == 'preview') {
+        final b = call.arguments;
+        if (b is Uint8List) setState(() => _previewBytes = b);
       }
     });
   }
@@ -136,6 +143,10 @@ class _TrackerScreenState extends State<TrackerScreen> {
     if (saved60fps != null) {
       _is60fpsMode = saved60fps;
     }
+    final savedBack = prefs.getBool('saved_cam_back');
+    final savedZoom = prefs.getDouble('saved_cam_zoom');
+    if (savedBack != null) _camUseBack = savedBack;
+    if (savedZoom != null) _camZoom = savedZoom;
   }
 
   Future<void> _saveSettings() async {
@@ -143,6 +154,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
     await prefs.setString('saved_ip', _ipController.text.trim());
     await prefs.setString('saved_port', _portController.text.trim());
     await prefs.setBool('saved_60fps', _is60fpsMode);
+    await prefs.setBool('saved_cam_back', _camUseBack);
+    await prefs.setDouble('saved_cam_zoom', _camZoom);
   }
 
   void _onARKitViewCreated(ARKitController controller) {
@@ -264,7 +277,11 @@ class _TrackerScreenState extends State<TrackerScreen> {
         'port': kVideoPort,
         'usb': _camUsbMode,
         'quality': 0.5, // JPEG quality; lower = less bandwidth, still 60fps
+        'back': _camUseBack, // back lens = real optical zoom + better sensor
+        'zoom': _camZoom,
       });
+      await _cameraChannel
+          .invokeMethod('setPreview', {'enabled': _camPreviewOn});
       setState(() {
         _streaming = true;
         _faceDetected = true;
@@ -287,6 +304,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
         _streaming = false;
         _faceDetected = false;
         _videoStatus = notify ? 'Disconnected' : '';
+        _previewBytes = null;
       });
     }
   }
@@ -410,9 +428,14 @@ class _TrackerScreenState extends State<TrackerScreen> {
           children: [
             // --- background camera surface ---
             if (_cameraMode) ...[
-              // Native AVFoundation owns the camera for strict 60fps (no Flutter
-              // preview surface) — watch the live feed on the PC instead.
-              Positioned.fill(child: Container(color: const Color(0xFF0A0A0A))),
+              // Native AVFoundation owns the camera for strict 60fps. With "Camera Preview"
+              // on, the native side pushes throttled JPEGs up to show here; else plain black.
+              Positioned.fill(
+                child: (_camPreviewOn && _previewBytes != null)
+                    ? Image.memory(_previewBytes!,
+                        fit: BoxFit.contain, gaplessPlayback: true)
+                    : Container(color: const Color(0xFF0A0A0A)),
+              ),
             ] else ...[
               if (arkitRequired)
                 Positioned.fill(
@@ -559,6 +582,41 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               ),
                             ],
                           ),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              const Text('Lens:',
+                                  style: TextStyle(
+                                      color: Colors.grey, fontSize: 13)),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: ChoiceChip(
+                                  label: const Center(child: Text('Front')),
+                                  selected: !_camUseBack,
+                                  onSelected: (_) =>
+                                      setState(() => _camUseBack = false),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: ChoiceChip(
+                                  label:
+                                      const Center(child: Text('Back (zoom)')),
+                                  selected: _camUseBack,
+                                  onSelected: (_) =>
+                                      setState(() => _camUseBack = true),
+                                ),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            _camUseBack
+                                ? 'Back lens: real optical zoom + better sensor — mount the phone with its back facing you.'
+                                : 'Front lens: digital zoom only (no extra detail).',
+                            style: TextStyle(
+                                color: Colors.grey.withValues(alpha: 0.7),
+                                fontSize: 11),
+                          ),
                         ],
                       ],
                       const SizedBox(height: 20),
@@ -616,7 +674,41 @@ class _TrackerScreenState extends State<TrackerScreen> {
                             ],
                           ),
                         ),
-                        const SizedBox(height: 24),
+                        const SizedBox(height: 14),
+                        // Live zoom — drag any time; applies instantly while streaming so you can
+                        // frame yourself in the preview. (Back lens = real optical zoom.)
+                        Row(
+                          children: [
+                            const Icon(Icons.zoom_out,
+                                color: Colors.grey, size: 18),
+                            Expanded(
+                              child: Slider(
+                                value: _camZoom.clamp(1.0, 5.0),
+                                min: 1.0,
+                                max: 5.0,
+                                divisions: 40,
+                                label: '${_camZoom.toStringAsFixed(1)}x',
+                                onChanged: (v) {
+                                  setState(() => _camZoom = v);
+                                  if (_streaming) {
+                                    _cameraChannel
+                                        .invokeMethod('setZoom', {'zoom': v});
+                                  }
+                                },
+                                onChangeEnd: (_) => _saveSettings(),
+                              ),
+                            ),
+                            const Icon(Icons.zoom_in,
+                                color: Colors.grey, size: 18),
+                            const SizedBox(width: 8),
+                            Text('${_camZoom.toStringAsFixed(1)}x',
+                                style: const TextStyle(
+                                    color: Color(0xFF00D4FF),
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
                       ] else ...[
                         const Text('LIVE POSE',
                             style: TextStyle(
@@ -699,6 +791,80 @@ class _TrackerScreenState extends State<TrackerScreen> {
                     ],
                     Row(
                       children: [
+                        // Camera-mode controls: live preview toggle + Display Off.
+                        if (_cameraMode) ...[
+                          Expanded(
+                            child: SizedBox(
+                              height: 44,
+                              child: OutlinedButton.icon(
+                                onPressed: () {
+                                  setState(
+                                      () => _camPreviewOn = !_camPreviewOn);
+                                  _cameraChannel.invokeMethod(
+                                      'setPreview', {'enabled': _camPreviewOn});
+                                  if (!_camPreviewOn) {
+                                    setState(() => _previewBytes = null);
+                                  }
+                                },
+                                icon: Icon(
+                                    _camPreviewOn
+                                        ? Icons.videocam_off
+                                        : Icons.videocam,
+                                    size: 16),
+                                label: Text(
+                                    _camPreviewOn
+                                        ? 'Hide Preview'
+                                        : 'Camera Preview',
+                                    style: const TextStyle(fontSize: 13)),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: _camPreviewOn
+                                      ? const Color(0xFF00D4FF)
+                                      : Colors.grey,
+                                  side: BorderSide(
+                                      color: _camPreviewOn
+                                          ? const Color(0xFF00D4FF)
+                                          : Colors.grey.withValues(alpha: 0.3)),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8)),
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (_streaming) ...[
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: SizedBox(
+                                height: 44,
+                                child: OutlinedButton.icon(
+                                  onPressed: () {
+                                    setState(
+                                        () => _screenBlackoutMode = true);
+                                    SystemChrome.setEnabledSystemUIMode(
+                                        SystemUiMode.manual,
+                                        overlays: []);
+                                    const MethodChannel(
+                                            'com.headtracker.app/native')
+                                        .invokeMethod('toggleProximity',
+                                            {'enable': true});
+                                  },
+                                  icon: const Icon(Icons.power_settings_new,
+                                      size: 16),
+                                  label: const Text('Display Off',
+                                      style: TextStyle(fontSize: 13)),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.grey,
+                                    side: BorderSide(
+                                        color: Colors.grey
+                                            .withValues(alpha: 0.3)),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(8)),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
                         // The ARKit preview/canvas toggle only applies to pose modes.
                         if (!_cameraMode)
                           Expanded(
